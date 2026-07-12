@@ -17,18 +17,14 @@ from collections import Counter
 WORKSPACE = os.environ.get("SOULMEM_WORKSPACE", os.path.expanduser("~/.openclaw/workspace"))
 DB_PATH   = os.path.join(WORKSPACE, "memory", "episodic_memory.db")
 
-TOKEN_RE  = re.compile(r'[\u4e00-\u9fff]|[a-zA-Z0-9]+')
-SANITIZE_PRIVATE_RE = re.compile(r'^__[a-zA-Z_][a-zA-Z0-9_]*\s*[:=]\s*.*$', re.MULTILINE)
-SANITIZE_DEBUG_RE  = re.compile(r'^\s*#\s*(DEBUG|TODO|TEMP|FIXME).*$|^\s*\[(DEBUG|TEMP|PRIVATE)\].*$', re.MULTILINE)
+# Import shared sanitize module
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, SCRIPT_DIR)
+from sanitize import sanitize, sanitize_record
+
+TOKEN_RE  = re.compile(r'[\u4e00-\u9fff]+|[a-zA-Z0-9]+')
 
 def tokens(text): return [t.lower() for t in TOKEN_RE.findall(text or '') if len(t) > 1]
-
-def sanitize(text):
-    if not text: return ''
-    text = SANITIZE_PRIVATE_RE.sub('', text)
-    text = SANITIZE_DEBUG_RE.sub('', text)
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    return text.strip()
 
 def bm25(qt, dt, avg_dl, k1=1.2, b=0.75):
     if not qt or not dt: return 0.0
@@ -45,11 +41,13 @@ def bm25(qt, dt, avg_dl, k1=1.2, b=0.75):
 
 def get_emb(text):
     try:
-        r = subprocess.run(['ollama', 'embed', '--model', 'nomic-embed-text', text[:512]],
-                           capture_output=True, text=True, timeout=30)
-        if r.returncode == 0:
-            data = json.loads(r.stdout)
-            return data.get('embeddings', [[]])[0] if 'embeddings' in data else data.get('embedding', [])
+        import urllib.request
+        req = urllib.request.Request('http://localhost:11434/api/embeddings',
+            data=json.dumps({'model':'nomic-embed-text','prompt':text[:512]}).encode(),
+            headers={'Content-Type':'application/json'})
+        resp = urllib.request.urlopen(req, timeout=30)
+        data = json.loads(resp.read())
+        return data.get('embedding', [])
     except: pass
     return []
 
@@ -60,13 +58,6 @@ def cosine(a, b):
     nb = math.sqrt(sum(y*y for y in b)) or 1
     return d/(na*nb)
 
-def sanitize_memory_record(record):
-    clean = dict(record)
-    for f in ('summary', 'detail', 'tags'):
-        if f in clean and clean[f]:
-            clean[f] = sanitize(str(clean[f]))
-    return clean
-
 class SearchEngine:
     def __init__(self):
         self.conn = sqlite3.connect(DB_PATH)
@@ -75,6 +66,7 @@ class SearchEngine:
         self.cur.execute('CREATE TABLE IF NOT EXISTS mem_vec (id INTEGER PRIMARY KEY, vec TEXT, mod TEXT, upd TEXT)')
 
     def build(self):
+        """Rebuild entire vector index from scratch."""
         self.cur.execute('SELECT id, summary, detail, tags FROM episodic_memory')
         rows = self.cur.fetchall()
         if not rows: return
@@ -89,6 +81,18 @@ class SearchEngine:
                 cnt += 1
         self.conn.commit()
         print(f"Vector index built: {cnt}/{len(rows)}")
+
+    def build_incremental(self, record_id: int):
+        """Update vector index for a single record (called after capture)."""
+        self.cur.execute('SELECT id, summary, detail, tags FROM episodic_memory WHERE id = ?', (record_id,))
+        row = self.cur.fetchone()
+        if not row:
+            return
+        vec = get_emb(f"{row['summary']} {row['detail']} {row['tags']}"[:512])
+        if vec:
+            self.cur.execute('REPLACE INTO mem_vec VALUES (?,?,?,?)',
+                             (row['id'], json.dumps(vec), 'nomic-embed-text', datetime.now().isoformat()))
+            self.conn.commit()
 
     def search(self, query, top=5):
         qt = tokens(query)
@@ -126,7 +130,7 @@ class SearchEngine:
                 'heat': round(heats[i],3), 'score': round(final,3)
             })
         results.sort(key=lambda x: x['score'], reverse=True)
-        return [sanitize_memory_record(r) for r in results[:top]]
+        return [sanitize_record(r) for r in results[:top]]
 
 def main():
     import argparse

@@ -68,10 +68,8 @@ def auto_capture_from_transcript(transcript_path: str):
         print(f"❌ {e}"); return False
 
 def find_latest_session_transcript():
-    sessions_dir = os.path.expanduser("~/.openclaw/agents/*/sessions")
-    import glob
-    files = glob.glob(osessions_dir + "/*.jsonl") if False else []
-    # Try default agent session dirs
+    import glob, os
+    files = []
     for agent_dir in ["kk", "main", "default"]:
         d = os.path.expanduser(f"~/.openclaw/agents/{agent_dir}/sessions")
         if os.path.exists(d):
