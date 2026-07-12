@@ -53,9 +53,10 @@ def cmd_search(args):
 
 
 def cmd_capture(args):
-    """Write a memory record, then incrementally update vector index."""
+    """Write a memory record, then incrementally update vector index + knowledge graph."""
     from episodic_capture import init_db, capture_record
     from memory_search import SearchEngine
+    from graph import KnowledgeGraph
 
     conn = init_db()
     record_id = capture_record(
@@ -79,6 +80,15 @@ def cmd_capture(args):
         print("✅ 向量索引已增量更新")
     except Exception as e:
         print(f"⚠️ 向量索引更新失败: {e}")
+
+    # Auto-index into knowledge graph
+    try:
+        kg = KnowledgeGraph()
+        text = f"{args.summary} {args.detail or ''}"
+        kg.index_memory(record_id, text)
+        print("✅ 知识图谱已自动关联")
+    except Exception as e:
+        print(f"⚠️ 图谱关联失败: {e}")
 
 
 def cmd_auto(args):
@@ -173,12 +183,51 @@ def cmd_promises(args):
         print("无活跃约定")
 
 
+def cmd_graph(args):
+    """Knowledge graph operations."""
+    from graph import KnowledgeGraph
+    kg = KnowledgeGraph()
+    if args.graph_command == 'build':
+        kg.build()
+    elif args.graph_command == 'show':
+        stats = kg.get_stats()
+        print("📊 知识图谱统计")
+        print(f"   实体总数: {stats['entities']}")
+        print(f"   关系总数: {stats['relationships']}")
+        print(f"   提及次数: {stats['mentions']}")
+        print("\n🏆 热门实体 Top 15:")
+        for i, e in enumerate(stats['top_entities'], 1):
+            print(f"   {i:2}. {e['name']:20} ({e['type']}) — {e['mentions']}次")
+    elif args.graph_command == 'related':
+        related = kg.get_related_memories(args.memory_id, args.depth)
+        if not related:
+            print(f"未找到关联记忆")
+            return
+        print(f"🔗 关联记忆 (深度{args.depth}):")
+        for i, m in enumerate(related, 1):
+            print(f"   [{i}] ({m['scene_type']}) {m['summary']} [{m['memory_date']}]")
+    else:
+        print("Available: build, show, related")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="soulmem",
         description="SoulMem — Soul Memory for OpenClaw",
     )
     sub = parser.add_subparsers(dest="command", help="Available commands")
+
+    # --- graph ---
+    p_graph = sub.add_parser("graph", help="Knowledge graph operations")
+    p_graph_graph = p_graph.add_subparsers(dest="graph_command")
+    p_graph_build = p_graph_graph.add_parser("build", help="Build graph from all memories")
+    p_graph_show = p_graph_graph.add_parser("show", help="Show graph statistics")
+    p_graph_related = p_graph_graph.add_parser("related", help="Find related memories via graph")
+    p_graph_related.add_argument("memory_id", type=int, help="Memory ID")
+    p_graph_related.add_argument("--depth", type=int, default=2, help="Traversal depth")
+
+    # --- promises ---
+    sub.add_parser("promises", help="Show active promises")
 
     # --- search ---
     p_search = sub.add_parser("search", help="Hybrid search memories")
@@ -234,6 +283,7 @@ def main():
         "auto": cmd_auto,
         "stats": cmd_stats,
         "build": cmd_build,
+        "graph": cmd_graph,
         "decay": cmd_decay,
         "heat": cmd_heat,
         "recent": cmd_recent,
