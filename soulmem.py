@@ -9,6 +9,8 @@
 #   soulmem auto                     # auto-capture from latest transcript
 #   soulmem stats                    # show memory statistics
 #   soulmem build                    # build / rebuild vector index
+#   soulmem graph build/show/related # knowledge graph operations
+#   soulmem triples add/search/list  # symptom-cause-solution store
 #   soulmem decay                    # run weight decay on stale memories
 #   soulmem heat [--days 7]          # show file heat ranking
 #   soulmem recent                   # show recent high-importance events
@@ -20,6 +22,7 @@
 
 import os
 import sys
+import json
 import argparse
 
 # Ensure scripts/ and workspace are importable
@@ -27,8 +30,6 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS_DIR = os.path.join(SCRIPT_DIR, "scripts")
 WORKSPACE = os.environ.get("SOULMEM_WORKSPACE", os.path.expanduser("~/.openclaw/workspace"))
 DB_PATH = os.path.join(WORKSPACE, "memory", "episodic_memory.db")
-# Add both soulmem/scripts and workspace/scripts to path
-# Add soulmem scripts first, then workspace scripts
 sys.path.insert(0, SCRIPTS_DIR)
 scripts_dir = os.path.join(WORKSPACE, "scripts")
 if scripts_dir != SCRIPTS_DIR:
@@ -183,6 +184,45 @@ def cmd_promises(args):
         print("无活跃约定")
 
 
+def cmd_triples(args):
+    """Symptom-Cause-Solution triple store."""
+    from triples import TripleStore
+    ts = TripleStore()
+    if args.triples_command == 'add':
+        tags = json.loads(args.tags) if args.tags else []
+        tid = ts.add(args.symptom, args.cause, args.solution, tags, args.domain, args.confidence)
+        print(f"✅ 三元组写入 ID={tid}")
+    elif args.triples_command == 'search':
+        results = ts.search(args.query, args.top)
+        if not results:
+            print(f"未找到与「{args.query}」相关的经验")
+            return
+        print(f"🔍 '{args.query}' → {len(results)} 条经验")
+        for i, t in enumerate(results, 1):
+            print(f"  [{i}] 匹配:{t['match_score']} 置信:{t['confidence']} | {t['symptom'][:50]}")
+    elif args.triples_command == 'list':
+        results = ts.list_all()
+        print(f"📋 共 {len(results)} 条经验")
+        for t in results:
+            print(f"  #{t['id']} | {t['domain']} | 使用:{t['usage_count']}次 | {t['symptom'][:50]}")
+    elif args.triples_command == 'show':
+        t = ts.get(args.triple_id)
+        if not t:
+            print(f"未找到 ID={args.triple_id}")
+            return
+        print(f"📋 #{t['id']} | 领域:{t['domain']} | 置信:{t['confidence']} | 使用:{t['usage_count']}次")
+        print(f"  症状: {t['symptom']}")
+        print(f"  根因: {t['cause']}")
+        print(f"  方案: {t['solution']}")
+    elif args.triples_command == 'delete':
+        if ts.delete(args.triple_id):
+            print(f"✅ 已删除 ID={args.triple_id}")
+        else:
+            print(f"未找到 ID={args.triple_id}")
+    else:
+        print("Available: add, search, list, show, delete")
+
+
 def cmd_graph(args):
     """Knowledge graph operations."""
     from graph import KnowledgeGraph
@@ -258,6 +298,25 @@ def main():
     # --- decay ---
     sub.add_parser("decay", help="Run weight decay")
 
+    # --- triples ---
+    p_triples = sub.add_parser("triples", help="Symptom-Cause-Solution triple store")
+    p_triples_sub = p_triples.add_subparsers(dest="triples_command")
+    p_triples_add = p_triples_sub.add_parser("add", help="Add a triple")
+    p_triples_add.add_argument("--symptom", required=True)
+    p_triples_add.add_argument("--cause", required=True)
+    p_triples_add.add_argument("--solution", required=True)
+    p_triples_add.add_argument("--tags", default="[]")
+    p_triples_add.add_argument("--domain", default="general")
+    p_triples_add.add_argument("--confidence", type=float, default=0.8)
+    p_triples_search = p_triples_sub.add_parser("search", help="Search triples")
+    p_triples_search.add_argument("query")
+    p_triples_search.add_argument("--top", type=int, default=5)
+    p_triples_sub.add_parser("list", help="List all triples")
+    p_triples_show = p_triples_sub.add_parser("show", help="Show triple details")
+    p_triples_show.add_argument("triple_id", type=int)
+    p_triples_del = p_triples_sub.add_parser("delete", help="Delete a triple")
+    p_triples_del.add_argument("triple_id", type=int)
+
     # --- heat ---
     p_heat = sub.add_parser("heat", help="Show file heat ranking")
     p_heat.add_argument("--days", type=int, default=7, help="Scan last N days")
@@ -267,9 +326,6 @@ def main():
     p_recent = sub.add_parser("recent", help="Show recent high-importance events")
     p_recent.add_argument("--days", type=int, default=3, help="Lookback days")
     p_recent.add_argument("--min-importance", type=int, default=7, help="Min importance")
-
-    # --- promises ---
-    sub.add_parser("promises", help="Show active promises")
 
     args = parser.parse_args()
 
@@ -284,6 +340,7 @@ def main():
         "stats": cmd_stats,
         "build": cmd_build,
         "graph": cmd_graph,
+        "triples": cmd_triples,
         "decay": cmd_decay,
         "heat": cmd_heat,
         "recent": cmd_recent,
