@@ -15,6 +15,8 @@
 #   soulmem heat [--days 7]          # show file heat ranking
 #   soulmem recent                   # show recent high-importance events
 #   soulmem promises                 # show active promises
+#   soulmem reviews [--days 30]      # show memories due for review (not accessed in N days)
+#   soulmem sync [--direction both]  # bidirectional category↔episodic sync
 #
 # Environment:
 #   SOULMEM_WORKSPACE  (default: ~/.openclaw/workspace)
@@ -250,6 +252,44 @@ def cmd_graph(args):
         print("Available: build, show, related")
 
 
+def cmd_reviews(args):
+    """Show memories due for review (not accessed recently)."""
+    import sqlite3
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    days = args.days
+    cur.execute("""
+        SELECT id, scene_type, summary, importance, weight, last_accessed, created_at
+        FROM episodic_memory
+        WHERE (last_accessed IS NULL OR last_accessed = '' OR last_accessed < datetime('now', ?))
+        AND importance >= ?
+        ORDER BY importance DESC, created_at DESC
+        LIMIT ?
+    """, (f'-{days} days', args.min_importance, args.limit))
+    rows = cur.fetchall()
+    conn.close()
+    if not rows:
+        print(f"无到期回顾的记忆（>{days}天未访问且重要性≥{args.min_importance}）")
+        return
+    print(f"📝 需要回顾的记忆（>{days}天未访问）\n")
+    for i, r in enumerate(rows, 1):
+        print(f"  [{i}] (#{r['id']}) {r['scene_type']}")
+        print(f"      {r['summary'][:90]}")
+        print(f"      重要:{r['importance']} 权重:{r['weight']:.2f} 上次访问:{r['last_accessed'][:10] if r['last_accessed'] else 'never'}")
+        print()
+
+
+def cmd_sync(args):
+    """Bidirectional sync between category KB and episodic memory."""
+    from sync_memory import main as sync_main
+    import sys
+    old_argv = sys.argv
+    sys.argv = ['sync_memory', '--direction', args.direction, '--limit', str(args.limit)]
+    sync_main()
+    sys.argv = old_argv
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="soulmem",
@@ -327,6 +367,17 @@ def main():
     p_recent.add_argument("--days", type=int, default=3, help="Lookback days")
     p_recent.add_argument("--min-importance", type=int, default=7, help="Min importance")
 
+    # --- reviews ---
+    p_reviews = sub.add_parser("reviews", help="Show memories due for review")
+    p_reviews.add_argument("--days", type=int, default=30, help="Not accessed in N days")
+    p_reviews.add_argument("--min-importance", type=int, default=5, help="Min importance")
+    p_reviews.add_argument("--limit", type=int, default=15, help="Max results")
+
+    # --- sync ---
+    p_sync = sub.add_parser("sync", help="Category↔Episodic bidirectional sync")
+    p_sync.add_argument("--direction", default="both", choices=["both", "to_cat", "from_cat"])
+    p_sync.add_argument("--limit", type=int, default=20, help="Max records to sync")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -345,6 +396,8 @@ def main():
         "heat": cmd_heat,
         "recent": cmd_recent,
         "promises": cmd_promises,
+        "reviews": cmd_reviews,
+        "sync": cmd_sync,
     }
 
     handler = commands.get(args.command)
