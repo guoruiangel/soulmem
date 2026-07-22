@@ -45,7 +45,35 @@ if scripts_dir != SCRIPTS_DIR:
 
 
 def cmd_search(args):
-    """Hybrid search: BM25 + vector + heat decay."""
+    """Hybrid search: BM25 + vector + heat, with TF-IDF fallback."""
+    # Check if ollama is available
+    ollama_available = False
+    try:
+        import urllib.request
+        req = urllib.request.Request('http://localhost:11434/api/tags',
+            headers={'Content-Type':'application/json'})
+        urllib.request.urlopen(req, timeout=2)
+        ollama_available = True
+    except:
+        pass
+    
+    if not ollama_available:
+        # Fallback to TF-IDF search
+        from memory_search_lite import MemorySearchLite
+        searcher = MemorySearchLite()
+        results = searcher.search(args.query, args.top)
+        if not results:
+            print("No results.")
+            return
+        print(f"🔍 '{args.query}' → {len(results)} results (TF-IDF mode, no ollama)\n")
+        for i, r in enumerate(results, 1):
+            print(f"  [{i}] ({r['scene_type']}) {r['summary']}")
+            print(f"      {r['memory_date']} | BM25={r['bm25']} Cosine={r['cosine']} Heat={r['heat']} Score={r['score']}")
+            if r.get('detail'):
+                print(f"      {r['detail'][:150]}")
+            print()
+        return
+    
     from memory_search import SearchEngine
     eng = SearchEngine()
     results = eng.search(args.query, args.top)
@@ -143,7 +171,24 @@ def cmd_stats(args):
 
 
 def cmd_build(args):
-    """Build / rebuild vector index."""
+    """Build / rebuild vector index (TF-IDF if no ollama)."""
+    # Check if ollama is available
+    ollama_available = False
+    try:
+        import urllib.request
+        req = urllib.request.Request('http://localhost:11434/api/tags',
+            headers={'Content-Type':'application/json'})
+        urllib.request.urlopen(req, timeout=2)
+        ollama_available = True
+    except:
+        pass
+    
+    if not ollama_available:
+        from memory_search_lite import MemorySearchLite
+        searcher = MemorySearchLite()
+        searcher.build()
+        return
+    
     from memory_search import SearchEngine
     eng = SearchEngine()
     eng.build()
