@@ -27,6 +27,8 @@ import sys
 import json
 import argparse
 
+SOULMEM_VERSION = "2.1"
+
 # Ensure scripts/ and workspace are importable
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS_DIR = os.path.join(SCRIPT_DIR, "scripts")
