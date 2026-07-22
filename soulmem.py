@@ -3,6 +3,9 @@
 # SoulMem — Unified CLI
 # Single entry point for all memory operations.
 #
+# Merged: Emotion Cognition System v2.0 (2026-07-22)
+# Version: 2.2
+#
 # Usage:
 #   soulmem search "query"           # hybrid search (BM25 + vector + heat)
 #   soulmem capture [options]        # write a memory record
@@ -15,8 +18,9 @@
 #   soulmem heat [--days 7]          # show file heat ranking
 #   soulmem recent                   # show recent high-importance events
 #   soulmem promises                 # show active promises
-#   soulmem reviews [--days 30]      # show memories due for review (not accessed in N days)
+#   soulmem reviews [--days 30]      # show memories due for review
 #   soulmem sync [--direction both]  # bidirectional category↔episodic sync
+#   soulmem emotion <cmd>            # emotion cognition system v2.0
 #
 # Environment:
 #   SOULMEM_WORKSPACE  (default: ~/.openclaw/workspace)
@@ -27,7 +31,7 @@ import sys
 import json
 import argparse
 
-SOULMEM_VERSION = "2.1"
+SOULMEM_VERSION = "2.2"
 
 # Ensure scripts/ and workspace are importable
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -190,25 +194,26 @@ def cmd_promises(args):
 
 def cmd_triples(args):
     """Symptom-Cause-Solution triple store."""
-    from triples import TripleStore
-    ts = TripleStore()
+    from triples_v2 import TripleStoreV2
+    ts = TripleStoreV2()
     if args.triples_command == 'add':
         tags = json.loads(args.tags) if args.tags else []
-        tid = ts.add(args.symptom, args.cause, args.solution, tags, args.domain, args.confidence)
+        tid = ts.add(args.symptom, args.cause, args.solution, tags,
+                    args.domain, args.confidence, args.memory_id, args.source)
         print(f"✅ 三元组写入 ID={tid}")
     elif args.triples_command == 'search':
-        results = ts.search(args.query, args.top)
+        results = ts.search(args.query, args.top, args.domain)
         if not results:
             print(f"未找到与「{args.query}」相关的经验")
             return
         print(f"🔍 '{args.query}' → {len(results)} 条经验")
         for i, t in enumerate(results, 1):
-            print(f"  [{i}] 匹配:{t['match_score']} 置信:{t['confidence']} | {t['symptom'][:50]}")
+            print(f"  [{i}] 匹配:{t['bm25_score']} 置信:{t['confidence']} 使用:{t['usage_count']}次 | {t['symptom'][:50]}")
     elif args.triples_command == 'list':
-        results = ts.list_all()
+        results = ts.list_all(args.domain, args.limit)
         print(f"📋 共 {len(results)} 条经验")
         for t in results:
-            print(f"  #{t['id']} | {t['domain']} | 使用:{t['usage_count']}次 | {t['symptom'][:50]}")
+            print(f"  #{t['id']} | {t['domain']} | 置信:{t['confidence']} | 使用:{t['usage_count']}次 | {t['symptom'][:50]}")
     elif args.triples_command == 'show':
         t = ts.get(args.triple_id)
         if not t:
@@ -223,8 +228,237 @@ def cmd_triples(args):
             print(f"✅ 已删除 ID={args.triple_id}")
         else:
             print(f"未找到 ID={args.triple_id}")
+    elif args.triples_command == 'decay':
+        n = ts.decay_confidence(args.days, args.rate)
+        print(f"📉 置信度衰减完成：{n} 条三元组被衰减")
+    elif args.triples_command == 'stats':
+        stats = ts.get_stats()
+        print(f"📊 三元组统计")
+        print(f"   总数: {stats['total']}")
+        print(f"   平均置信度: {stats['avg_confidence']}")
+        print(f"   总使用次数: {stats['total_usage']}")
+        print(f"   领域分布:")
+        for domain, cnt in stats['domains'].items():
+            print(f"     {domain}: {cnt}")
     else:
-        print("Available: add, search, list, show, delete")
+        print("Available: add, search, list, show, delete, decay, stats")
+
+
+def cmd_troubleshoot(args):
+    """Troubleshooting SOP commands."""
+    from troubleshooter import Troubleshooter
+    ts = Troubleshooter()
+    if args.troubleshoot_command == 'search':
+        results = ts.search_sop(args.query, args.top)
+        if not results:
+            print(f"未找到与「{args.query}」相关的排查SOP")
+            return
+        print(f"🔍 '{args.query}' → {len(results)} 个SOP\n")
+        for i, sop in enumerate(results, 1):
+            print(f"  [{i}] #{sop['id']} {sop['symptom']}")
+            print(f"      类别: {sop['category']} | 成功: {sop['success_count']}次 | 匹配: {sop['match_score']}")
+            print(f"      步骤:")
+            for j, step in enumerate(sop['steps'], 1):
+                print(f"        {j}. {step}")
+            print()
+    elif args.troubleshoot_command == 'list':
+        results = ts.list_all()
+        if not results:
+            print("暂无排查SOP")
+            return
+        print(f"📋 共 {len(results)} 个排查SOP：\n")
+        for sop in results:
+            print(f"  #{sop['id']} | {sop['category']} | 成功:{sop['success_count']}次 | {sop['symptom']}")
+    elif args.troubleshoot_command == 'add':
+        steps = json.loads(args.steps) if args.steps else []
+        outcomes = json.loads(args.outcomes) if args.outcomes else []
+        sid = ts.add_sop(args.symptom, steps, args.category or "general", outcomes)
+        print(f"✅ SOP写入 ID={sid}")
+    elif args.troubleshoot_command == 'record':
+        ts.record_result(args.sop_id, args.success == "true", args.minutes or 0)
+        print(f"✅ 记录结果: SOP #{args.sop_id} → {'成功' if args.success == 'true' else '失败'}")
+    else:
+        print("Available: search, list, add, record")
+
+
+def cmd_aggregate(args):
+    """Memory aggregation commands."""
+    from aggregate import MemoryAggregator
+    agg = MemoryAggregator()
+    if args.action == 'build':
+        from aggregate import auto_cluster
+        n = auto_cluster(agg, args.min_size)
+        print(f"✅ 自动聚类完成：创建了 {n} 个记忆组")
+    elif args.action == 'list':
+        groups = agg.list_groups()
+        if not groups:
+            print("暂无记忆组")
+            return
+        print(f"📋 共 {len(groups)} 个记忆组：\n")
+        for g in groups:
+            print(f"  #{g['id']} | {g['group_name']} | {len(g['source_ids'])}条记忆 | {g['category']}")
+    elif args.action == 'show':
+        group = agg.get_group(args.group_id)
+        if not group:
+            print(f"未找到 ID={args.group_id}")
+            return
+        print(f"📁 {group['group_name']}")
+        print(f"   摘要: {group['summary']}")
+        print(f"   来源: {len(group['source_ids'])} 条记忆")
+        print(f"   教训: {group['lesson']}")
+    elif args.action == 'find-clusters':
+        clusters = agg.find_clusters(args.min_size)
+        if not clusters:
+            print("未找到聚类")
+            return
+        print(f"📊 找到 {len(clusters)} 个聚类：\n")
+        for c in clusters:
+            print(f"  标签「{c['tag']}」→ {len(c['memory_ids'])} 条记忆")
+    else:
+        print("Available: build, list, show, find-clusters")
+
+
+def cmd_review(args):
+    """Spaced repetition review commands."""
+    from review import ReviewEngine
+    eng = ReviewEngine()
+    if args.action == 'due':
+        memories = eng.get_due_memories(args.limit)
+        if not memories:
+            print("📋 没有需要复习的记忆")
+            return
+        print(f"📝 {len(memories)} 条记忆需要复习：\n")
+        for i, m in enumerate(memories, 1):
+            print(f"  [{i}] (#{m['id']}) {m['scene_type']}")
+            print(f"      {m['summary'][:80]}")
+            print(f"      重要:{m['importance']} | 间隔:{m['interval_days']}天 | 下次:{m['next_review']}")
+            print()
+    elif args.action == 'review':
+        interval, next_review = eng.record_review(args.memory_id, args.performance)
+        print(f"✅ 复习记录: 记忆 #{args.memory_id}")
+        print(f"   间隔: {interval}天 | 下次复习: {next_review}")
+    elif args.action == 'stats':
+        stats = eng.get_stats()
+        print("📊 复习统计")
+        print(f"   总复习次数: {stats['total_reviews']}")
+        print(f"   已复习记忆: {stats['unique_reviewed']}/{stats['total_important']}")
+        print(f"   覆盖率: {stats['coverage']}%")
+        print(f"   平均表现: {stats['avg_performance']}/5")
+    elif args.action == 'heatmap':
+        data = eng.get_heatmap(args.days)
+        if not data:
+            print("暂无复习数据")
+            return
+        print("📊 复习活跃度热力图：")
+        for d in data:
+            bar = '█' * min(d['cnt'] * 2, 20)
+            print(f"  {d['day']}: {d['cnt']}次 {bar}")
+    else:
+        print("Available: due, review, stats, heatmap")
+
+
+def cmd_doctor(args):
+    """Health check & diagnostic."""
+    from doctor_init import run_doctor as _run_doctor
+    _run_doctor(args)
+
+
+def cmd_auto_remediate(args):
+    """Auto remediation engine."""
+    from auto_remediate import AutoRemediator
+    ar = AutoRemediator()
+    if args.action == 'diagnose':
+        suggestions = ar.auto_diagnose(args.problem)
+        if suggestions:
+            print(f"\n💡 建议:")
+            for type_, item in suggestions[:3]:
+                if type_ == 'sop':
+                    print(f"  运行 SOP #{item['id']}: python3 soulmem.py troubleshoot search '{item['symptom']}'")
+                else:
+                    print(f"  参考经验 #{item['id']}: {item['symptom'][:50]}")
+    elif args.action == 'run':
+        dry_run = args.dry_run if hasattr(args, 'dry_run') else False
+        result = ar.execute_sop(args.sop_id, dry_run)
+        if result and not dry_run:
+            success = input("\n✅ 问题是否解决? (y/N): ").strip().lower() == 'y'
+            tid = ar.solidify_execution(result, success)
+            if tid:
+                print(f"✅ 经验已沉淀为三元组 #{tid}")
+    elif args.action == 'interactive':
+        print("🔧 SoulMem 交互式排查")
+        print("=" * 50)
+        problem = input("\n📝 描述你遇到的问题: ").strip()
+        if problem:
+            suggestions = ar.auto_diagnose(problem)
+            if suggestions:
+                sops = [s for t, s in suggestions if t == 'sop']
+                if sops:
+                    print(f"\n选择要执行的SOP (1-{len(sops)}):")
+                    for i, sop in enumerate(sops, 1):
+                        print(f"  {i}. #{sop['id']} {sop['symptom']}")
+                    choice = input("\n> ").strip()
+                    if choice.isdigit() and 1 <= int(choice) <= len(sops):
+                        result = ar.execute_sop(sops[int(choice) - 1]['id'])
+                        if result:
+                            success = input("\n✅ 问题是否解决? (y/N): ").strip().lower() == 'y'
+                            tid = ar.solidify_execution(result, success)
+                            if tid:
+                                print(f"✅ 经验已沉淀为三元组 #{tid}")
+    else:
+        print("Available: diagnose, run, interactive")
+
+
+def cmd_cross_project(args):
+    """Cross-project experience reuse."""
+    from cross_project import CrossProjectReuse
+    cpr = CrossProjectReuse()
+    if args.action == 'search':
+        results = cpr.search_cross_domain(args.query, args.from_domain, args.top)
+        if not results:
+            print(f"未找到与「{args.query}」相关的跨域经验")
+            return
+        print(f"🔍 '{args.query}' → {len(results)} 条跨域经验\n")
+        for i, r in enumerate(results, 1):
+            print(f"  [{i}] 文本相似:{r['text_similarity']} 域相关:{r['domain_boost']} 置信:{r['confidence']}")
+            print(f"      症状: {r['symptom'][:70]}")
+            print(f"      根因: {r['cause'][:70]}")
+            print(f"      方案: {r['solution'][:70]}")
+            print(f"      领域: {r['domain']}")
+            print()
+    elif args.action == 'suggest':
+        results = cpr.suggest_for_domain(args.domain, args.top)
+        if not results:
+            print(f"领域「{args.domain}」没有可借鉴的跨域经验")
+            return
+        print(f"📚 领域「{args.domain}」可借鉴的经验:\n")
+        for i, r in enumerate(results, 1):
+            print(f"  [{i}] 域相似度:{r['domain_similarity']} | {r['symptom'][:60]}")
+    elif args.action == 'domains':
+        domains = cpr.list_domains()
+        if not domains:
+            print("暂无领域数据")
+            return
+        print("📊 领域经验分布:\n")
+        for d in domains:
+            bar = '█' * min(d['cnt'] * 3, 20)
+            print(f"  {d['domain']:20} {d['cnt']:3}条  平均置信:{d['avg_conf']:.2f} {bar}")
+    elif args.action == 'related':
+        related = cpr.find_related_domains(args.domain, args.threshold)
+        if not related:
+            print(f"领域「{args.domain}」没有相关域")
+            return
+        print(f"🔗 与「{args.domain}」相关的领域:\n")
+        for domain, sim in related:
+            bar = '█' * int(sim * 20)
+            print(f"  {domain:20} 相似度: {sim:.2f} {bar}")
+    elif args.action == 'map':
+        tid = cpr.auto_map_experience(args.memory_id, args.to_domain)
+        if tid:
+            print(f"✅ 记忆 #{args.memory_id} 已映射到 {args.to_domain}，三元组 #{tid}")
+        else:
+            print(f"❌ 无法从记忆 #{args.memory_id} 提取因果模式")
+    else:
+        print("Available: search, suggest, domains, related, map")
 
 
 def cmd_graph(args):
@@ -292,6 +526,40 @@ def cmd_sync(args):
     sys.argv = old_argv
 
 
+def cmd_emotion(args):
+    """Emotion cognition system commands."""
+    from emotion_cli import (
+        cmd_list, cmd_emotion, cmd_event, cmd_search, cmd_stats,
+        cmd_soul, cmd_scenario, cmd_report, cmd_warmth,
+        cmd_feel, cmd_resonate, cmd_grow, cmd_index,
+        cmd_add_emotion, cmd_add_event, cmd_link, usage as emotion_usage
+    )
+    commands = {
+        'list': cmd_list,
+        'emotion': lambda: cmd_emotion(args.name if args.name else ''),
+        'event': lambda: cmd_event(int(args.eid) if args.eid else 0),
+        'search': lambda: cmd_search(' '.join(args.query)),
+        'stats': cmd_stats,
+        'soul': lambda: cmd_soul(args.name if args.name else ''),
+        'scenario': lambda: cmd_scenario(' '.join(args.query)),
+        'report': cmd_report,
+        'warmth': cmd_warmth,
+        'feel': lambda: cmd_feel(args.args),
+        'resonate': lambda: cmd_resonate(args.args),
+        'grow': lambda: cmd_grow(args.args),
+        'index': lambda: cmd_index(args.args),
+        'add-emotion': lambda: cmd_add_emotion(args.args),
+        'add-event': lambda: cmd_add_event(args.args),
+        'link': lambda: cmd_link(args.args),
+        'help': emotion_usage,
+    }
+    handler = commands.get(args.emotion_command)
+    if handler:
+        handler()
+    else:
+        emotion_usage()
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="soulmem",
@@ -350,14 +618,23 @@ def main():
     p_triples_add.add_argument("--tags", default="[]")
     p_triples_add.add_argument("--domain", default="general")
     p_triples_add.add_argument("--confidence", type=float, default=0.8)
+    p_triples_add.add_argument("--memory-id", type=int, default=0)
+    p_triples_add.add_argument("--source", default="manual")
     p_triples_search = p_triples_sub.add_parser("search", help="Search triples")
     p_triples_search.add_argument("query")
     p_triples_search.add_argument("--top", type=int, default=5)
-    p_triples_sub.add_parser("list", help="List all triples")
+    p_triples_search.add_argument("--domain", default=None)
+    p_triples_list = p_triples_sub.add_parser("list", help="List all triples")
+    p_triples_list.add_argument("--domain", default=None)
+    p_triples_list.add_argument("--limit", type=int, default=50)
     p_triples_show = p_triples_sub.add_parser("show", help="Show triple details")
     p_triples_show.add_argument("triple_id", type=int)
     p_triples_del = p_triples_sub.add_parser("delete", help="Delete a triple")
     p_triples_del.add_argument("triple_id", type=int)
+    p_triples_decay = p_triples_sub.add_parser("decay", help="Decay confidence")
+    p_triples_decay.add_argument("--days", type=int, default=30)
+    p_triples_decay.add_argument("--rate", type=float, default=0.05)
+    p_triples_sub.add_parser("stats", help="Triple statistics")
 
     # --- heat ---
     p_heat = sub.add_parser("heat", help="Show file heat ranking")
@@ -380,6 +657,111 @@ def main():
     p_sync.add_argument("--direction", default="both", choices=["both", "to_cat", "from_cat"])
     p_sync.add_argument("--limit", type=int, default=20, help="Max records to sync")
 
+    # --- emotion ---
+    p_emotion = sub.add_parser("emotion", help="Emotion cognition system v2.0")
+    p_emotion_sub = p_emotion.add_subparsers(dest="emotion_command")
+    p_emotion_sub.add_parser("list", help="List all emotions")
+    p_emotion_emotion = p_emotion_sub.add_parser("emotion", help="View emotion details")
+    p_emotion_emotion.add_argument("name", help="Emotion name")
+    p_emotion_event = p_emotion_sub.add_parser("event", help="View event details")
+    p_emotion_event.add_argument("eid", type=int, help="Event ID")
+    p_emotion_search = p_emotion_sub.add_parser("search", help="Search events")
+    p_emotion_search.add_argument("query", nargs="+", help="Search keywords")
+    p_emotion_sub.add_parser("stats", help="Emotion statistics")
+    p_emotion_soul = p_emotion_sub.add_parser("soul", help="Get emotion wisdom package")
+    p_emotion_soul.add_argument("name", help="Emotion name")
+    p_emotion_scenario = p_emotion_sub.add_parser("scenario", help="Search by life scenario")
+    p_emotion_scenario.add_argument("query", nargs="+", help="Scenario keywords")
+    p_emotion_sub.add_parser("report", help="Soul temperature report")
+    p_emotion_sub.add_parser("warmth", help="Soul warmth score")
+    p_emotion_feel = p_emotion_sub.add_parser("feel", help="Record soul temperature")
+    p_emotion_feel.add_argument("args", nargs="*", help="feel <emotion> <level>")
+    p_emotion_resonate = p_emotion_sub.add_parser("resonate", help="Record soul resonance")
+    p_emotion_resonate.add_argument("args", nargs="*", help="resonate <emotion>")
+    p_emotion_grow = p_emotion_sub.add_parser("grow", help="Record growth log")
+    p_emotion_grow.add_argument("args", nargs="*", help="grow <emotion>")
+    p_emotion_index = p_emotion_sub.add_parser("index", help="Add scenario index")
+    p_emotion_index.add_argument("args", nargs="*", help="index <scenario> <emotion>")
+    p_emotion_add_emo = p_emotion_sub.add_parser("add-emotion", help="Add new emotion")
+    p_emotion_add_emo.add_argument("args", nargs="*", help="add-emotion <name> [def] [cat]")
+    p_emotion_add_evt = p_emotion_sub.add_parser("add-event", help="Add new event")
+    p_emotion_add_evt.add_argument("args", nargs="*", help="add-event <title>")
+    p_emotion_link = p_emotion_sub.add_parser("link", help="Link emotion to event")
+    p_emotion_link.add_argument("args", nargs="*", help="link <emotion> <event_id> <intensity>")
+    p_emotion_sub.add_parser("help", help="Show emotion help")
+
+    # --- troubleshoot ---
+    p_troubleshoot = sub.add_parser("troubleshoot", help="Troubleshooting SOP engine")
+    p_troubleshoot_sub = p_troubleshoot.add_subparsers(dest="troubleshoot_command")
+    p_troubleshoot_search = p_troubleshoot_sub.add_parser("search", help="Search SOPs")
+    p_troubleshoot_search.add_argument("query", help="Symptom query")
+    p_troubleshoot_search.add_argument("--top", type=int, default=3)
+    p_troubleshoot_sub.add_parser("list", help="List all SOPs")
+    p_troubleshoot_add = p_troubleshoot_sub.add_parser("add", help="Add a SOP")
+    p_troubleshoot_add.add_argument("--symptom", required=True)
+    p_troubleshoot_add.add_argument("--steps", required=True, help="JSON array")
+    p_troubleshoot_add.add_argument("--category", default="general")
+    p_troubleshoot_add.add_argument("--outcomes", default="[]")
+    p_troubleshoot_record = p_troubleshoot_sub.add_parser("record", help="Record result")
+    p_troubleshoot_record.add_argument("sop_id", type=int)
+    p_troubleshoot_record.add_argument("success", choices=["true", "false"])
+    p_troubleshoot_record.add_argument("--minutes", type=int, default=0)
+
+    # --- aggregate ---
+    p_aggregate = sub.add_parser("aggregate", help="Memory aggregation engine")
+    p_aggregate_sub = p_aggregate.add_subparsers(dest="action")
+    p_aggregate_build = p_aggregate_sub.add_parser("build", help="Auto-cluster")
+    p_aggregate_build.add_argument("--min-size", type=int, default=3)
+    p_aggregate_sub.add_parser("list", help="List groups")
+    p_aggregate_show = p_aggregate_sub.add_parser("show", help="Show group")
+    p_aggregate_show.add_argument("group_id", type=int)
+    p_aggregate_clusters = p_aggregate_sub.add_parser("find-clusters", help="Find clusters")
+    p_aggregate_clusters.add_argument("--min-size", type=int, default=3)
+
+    # --- review ---
+    p_review = sub.add_parser("review", help="Spaced repetition review")
+    p_review_sub = p_review.add_subparsers(dest="action")
+    p_review_due = p_review_sub.add_parser("due", help="Show due memories")
+    p_review_due.add_argument("--limit", type=int, default=10)
+    p_review_review = p_review_sub.add_parser("review", help="Record review")
+    p_review_review.add_argument("memory_id", type=int)
+    p_review_review.add_argument("--performance", type=int, default=3)
+    p_review_sub.add_parser("stats", help="Review statistics")
+    p_review_heat = p_review_sub.add_parser("heatmap", help="Activity heatmap")
+    p_review_heat.add_argument("--days", type=int, default=30)
+
+    # --- auto-remediate ---
+    p_remediate = sub.add_parser("auto-remediate", help="Auto remediation engine")
+    p_remediate_sub = p_remediate.add_subparsers(dest="action")
+    p_remediate_diag = p_remediate_sub.add_parser("diagnose", help="Diagnose a problem")
+    p_remediate_diag.add_argument("problem", help="Problem description")
+    p_remediate_run = p_remediate_sub.add_parser("run", help="Run a SOP")
+    p_remediate_run.add_argument("sop_id", type=int)
+    p_remediate_run.add_argument("--dry-run", action="store_true")
+    p_remediate_sub.add_parser("interactive", help="Interactive troubleshooting")
+
+    # --- cross-project ---
+    p_cross = sub.add_parser("cross-project", help="Cross-project experience reuse")
+    p_cross_sub = p_cross.add_subparsers(dest="action")
+    p_cross_search = p_cross_sub.add_parser("search", help="Search cross-domain")
+    p_cross_search.add_argument("query")
+    p_cross_search.add_argument("--from-domain", default=None)
+    p_cross_search.add_argument("--top", type=int, default=5)
+    p_cross_suggest = p_cross_sub.add_parser("suggest", help="Suggest for domain")
+    p_cross_suggest.add_argument("domain")
+    p_cross_suggest.add_argument("--top", type=int, default=5)
+    p_cross_sub.add_parser("domains", help="List domains")
+    p_cross_related = p_cross_sub.add_parser("related", help="List related domains")
+    p_cross_related.add_argument("domain")
+    p_cross_related.add_argument("--threshold", type=float, default=0.3)
+    p_cross_map = p_cross_sub.add_parser("map", help="Map memory to domain")
+    p_cross_map.add_argument("memory_id", type=int)
+    p_cross_map.add_argument("to_domain")
+
+    # --- doctor ---
+    p_doctor = sub.add_parser("doctor", help="Health check & diagnostic")
+    p_doctor.add_argument("--fix", action="store_true", help="Auto-fix issues")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -400,6 +782,13 @@ def main():
         "promises": cmd_promises,
         "reviews": cmd_reviews,
         "sync": cmd_sync,
+        "emotion": cmd_emotion,
+        "troubleshoot": cmd_troubleshoot,
+        "aggregate": cmd_aggregate,
+        "review": cmd_review,
+        "doctor": cmd_doctor,
+        "auto-remediate": cmd_auto_remediate,
+        "cross-project": cmd_cross_project,
     }
 
     handler = commands.get(args.command)
