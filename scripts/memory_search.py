@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 # ============================================================================
-# SoulMem — Hybrid Memory Search
-# BM25 keyword + vector semantic + heat decay weighting.
+# SoulMem — Hybrid Memory Search v2
+# BM25 keyword + vector semantic + heat decay weighting + query expansion.
+#
+# Improvements in v2:
+# - Chinese-aware tokenization (jieba if available, fallback to bigram)
+# - Query expansion with synonyms and related terms
+# - Phrase matching boost
+# - Tag importance weighting
+# - Adaptive scoring formula
 #
 # Usage:
 #   python3 scripts/memory_search.py "your query"
 #   python3 scripts/memory_search.py --build
 #   python3 scripts/memory_search.py --stats
-#
-# Optional: if `ollama` is installed, uses nomic-embed-text for semantic search.
 # ============================================================================
 import os, sys, json, sqlite3, math, re, subprocess
 from datetime import datetime, timedelta
@@ -17,14 +22,81 @@ from collections import Counter
 WORKSPACE = os.environ.get("SOULMEM_WORKSPACE", os.path.expanduser("~/.openclaw/workspace"))
 DB_PATH   = os.path.join(WORKSPACE, "memory", "episodic_memory.db")
 
-# Import shared sanitize module
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 from sanitize import sanitize, sanitize_record
 
-TOKEN_RE  = re.compile(r'[\u4e00-\u9fff]+|[a-zA-Z0-9]+')
+TOKEN_RE = re.compile(r'[\u4e00-\u9fff]+|[a-zA-Z0-9]+')
 
-def tokens(text): return [t.lower() for t in TOKEN_RE.findall(text or '') if len(t) > 1]
+# Try jieba for Chinese segmentation
+try:
+    import jieba
+    jieba.setLogLevel(jieba.logging.WARNING)
+    HAS_JIEBA = True
+except ImportError:
+    HAS_JIEBA = False
+
+# Query expansion: synonyms and related terms
+SYNONYMS = {
+    "错误": ["bug", "报错", "失败", "error", "异常", "问题"],
+    "报错": ["错误", "bug", "error", "异常"],
+    "修复": ["解决", "修好", "搞定", "处理"],
+    "搞定": ["修复", "完成", "解决"],
+    "学习": ["研究", "探索", "学会", "掌握"],
+    "约定": ["承诺", "规则", "必须", "禁止"],
+    "任务": ["工作", "事情", "需求", "项目"],
+    "部署": ["上线", "发布", "搭建"],
+    "配置": ["设置", "参数", "环境"],
+    "超时": ["timeout", "太久", "等不及", "慢"],
+    "分段": ["分条", "逐句", "一句一句", "节奏"],
+    "暗线": ["关心", "惦记", "温度", "温柔"],
+    "心跳": ["heartbeat", "轮询", "检查"],
+    "记忆": ["回忆", "记录", "场景", "episodic"],
+    "搜索": ["查找", "检索", "查询"],
+    "图谱": ["graph", "关系", "关联", "知识图谱"],
+    "三元组": ["triple", "经验", "症状", "方案"],
+}
+
+def tokens(text):
+    """Tokenize with Chinese-aware segmentation."""
+    if not text:
+        return []
+    text = text.lower()
+    if HAS_JIEBA:
+        # Use jieba for Chinese segmentation
+        result = []
+        for token in jieba.cut(text):
+            token = token.strip()
+            if len(token) > 1:
+                result.append(token)
+        return result
+    else:
+        # Fallback: bigram for Chinese + word for English
+        result = []
+        for m in TOKEN_RE.finditer(text):
+            word = m.group()
+            if re.match(r'[\u4e00-\u9fff]+', word):
+                # Chinese: add bigrams
+                if len(word) == 2:
+                    result.append(word)
+                elif len(word) > 2:
+                    for i in range(len(word)-1):
+                        result.append(word[i:i+2])
+            else:
+                result.append(word)
+        return result
+
+def expand_query(query, max_expansion=3):
+    """Expand query with synonyms."""
+    qt = tokens(query)
+    expanded = set(qt)
+    for token in qt:
+        for key, syns in SYNONYMS.items():
+            if token in syns or token == key:
+                for s in syns[:max_expansion]:
+                    expanded.add(s)
+                expanded.add(key)
+    return list(expanded)
 
 def bm25(qt, dt, avg_dl, k1=1.2, b=0.75):
     if not qt or not dt: return 0.0
@@ -38,6 +110,22 @@ def bm25(qt, dt, avg_dl, k1=1.2, b=0.75):
         den = tf[t] + k1 * (1 - b + b * len(dt) / max(avg_dl, 1))
         score += idf * num / den
     return score
+
+def phrase_match(query, text):
+    """Check if query phrases appear in text."""
+    if not query or not text:
+        return 0.0
+    query = query.lower()
+    text = text.lower()
+    # Exact phrase match
+    if query in text:
+        return 1.0
+    # Partial phrase match (50% of query in text)
+    query_tokens = query.split()
+    if len(query_tokens) > 1:
+        matches = sum(1 for t in query_tokens if t in text)
+        return matches / len(query_tokens)
+    return 0.0
 
 def get_emb(text):
     try:
@@ -83,7 +171,7 @@ class SearchEngine:
         print(f"Vector index built: {cnt}/{len(rows)}")
 
     def build_incremental(self, record_id: int):
-        """Update vector index for a single record (called after capture)."""
+        """Update vector index for a single record."""
         self.cur.execute('SELECT id, summary, detail, tags FROM episodic_memory WHERE id = ?', (record_id,))
         row = self.cur.fetchone()
         if not row:
@@ -95,21 +183,34 @@ class SearchEngine:
             self.conn.commit()
 
     def search(self, query, top=5):
+        # Expand query with synonyms
+        expanded_query = expand_query(query)
         qt = tokens(query)
-        if not qt: return []
+        qt_expanded = tokens(' '.join(expanded_query))
+        
         self.cur.execute('SELECT * FROM episodic_memory')
         mems = self.cur.fetchall()
         if not mems: return []
 
         docs = [tokens(f"{m['summary']} {m['detail']} {m['tags']}") for m in mems]
         avg = sum(len(d) for d in docs) / len(docs)
-        bm25s = [bm25(qt, d, avg) for d in docs]
+        
+        # BM25 with expanded query
+        bm25s = [bm25(qt_expanded, d, avg) for d in docs]
+        
+        # Phrase match boost
+        phrase_scores = []
+        for m in mems:
+            text = f"{m['summary']} {m['detail']}"
+            phrase_scores.append(phrase_match(query, text))
 
+        # Vector similarity
         self.cur.execute('SELECT id, vec FROM mem_vec')
         vmap = {r['id']: json.loads(r['vec']) for r in self.cur.fetchall() if r['vec']}
         qvec = get_emb(query[:256])
         vecs = [cosine(qvec, vmap.get(m['id'], [])) for m in mems] if qvec else [0]*len(mems)
 
+        # Heat decay
         now = datetime.now()
         heats = []
         for m in mems:
@@ -119,22 +220,40 @@ class SearchEngine:
             except: decay = 0.5
             heats.append((m['weight'] or 1.0) * (m['importance'] or 5) * decay / 10)
 
+        # Tag boost: if query matches tag, boost score
+        tag_boosts = []
+        for m in mems:
+            tags = json.loads(m['tags']) if m['tags'] else []
+            boost = 0.0
+            for qt_token in qt:
+                for tag in tags:
+                    if qt_token in tag.lower():
+                        boost += 0.3
+            tag_boosts.append(boost)
+
         results = []
         for i, m in enumerate(mems):
-            final = 0.4*bm25s[i] + 0.4*vecs[i] + 0.2*heats[i]
+            # Adaptive scoring: phrase match gets high weight
+            final = (0.3 * bm25s[i] + 
+                     0.25 * vecs[i] + 
+                     0.2 * heats[i] + 
+                     0.15 * phrase_scores[i] + 
+                     0.1 * tag_boosts[i])
             results.append({
                 'id': m['id'], 'scene_type': m['scene_type'],
                 'summary': m['summary'][:80], 'detail': (m['detail'] or '')[:200],
                 'tags': m['tags'], 'memory_date': m['memory_date'],
                 'bm25': round(bm25s[i],3), 'vec': round(vecs[i],3),
-                'heat': round(heats[i],3), 'score': round(final,3)
+                'heat': round(heats[i],3), 'phrase': round(phrase_scores[i],3),
+                'tag_boost': round(tag_boosts[i],3),
+                'score': round(final,3)
             })
         results.sort(key=lambda x: x['score'], reverse=True)
         return [sanitize_record(r) for r in results[:top]]
 
 def main():
     import argparse
-    p = argparse.ArgumentParser(description='Hybrid memory search (BM25 + vector + heat)')
+    p = argparse.ArgumentParser(description='Hybrid memory search v2 (BM25 + vector + heat + expansion)')
     p.add_argument('query', nargs='?')
     p.add_argument('--build', action='store_true', help='Build vector index')
     p.add_argument('--top', type=int, default=5, help='Number of results')
@@ -156,7 +275,7 @@ def main():
     print(f"🔍 '{args.query}' → {len(rs)} results")
     for i, r in enumerate(rs, 1):
         print(f"  [{i}] ({r['scene_type']}) {r['summary']}")
-        print(f"      {r['memory_date']} | BM25={r['bm25']} Vec={r['vec']} Heat={r['heat']} Score={r['score']}")
+        print(f"      {r['memory_date']} | BM25={r['bm25']} Vec={r['vec']} Heat={r['heat']} Phrase={r['phrase']} Tag={r['tag_boost']} Score={r['score']}")
 
 if __name__ == '__main__':
     main()

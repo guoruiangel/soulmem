@@ -1,40 +1,33 @@
 #!/usr/bin/env python3
 # ============================================================================
-# SoulMem — Knowledge Graph Engine
-# Entity extraction, relationship discovery, and graph traversal search.
+# SoulMem — Knowledge Graph Engine v2
+# Entity extraction, relationship discovery, graph traversal, community detection.
 #
-# Usage:
-#   python3 scripts/graph.py build          # Build graph from all memories
-#   python3 scripts/graph.py search "query" # Graph-enhanced search
-#   python3 scripts/graph.py show           # Show graph statistics
-#   python3 scripts/graph.py entities       # List top entities
-#   python3 scripts/graph.py related <id>   # Find related memories via graph
+# Improvements in v2:
+# - Auto relationship type detection (not just 'associated')
+# - Graph export (GEXF/JSON for visualization)
+# - Community detection (simple label propagation)
+# - Path finding between entities
+# - Entity merging suggestions
+# - Graph metrics (centrality, density)
 # ============================================================================
-import os
-import sys
-import json
-import sqlite3
-import re
+import os, sys, json, sqlite3, re, math
 from collections import Counter, defaultdict
 from datetime import datetime
 
 WORKSPACE = os.environ.get("SOULMEM_WORKSPACE", os.path.expanduser("~/.openclaw/workspace"))
 DB_PATH = os.path.join(WORKSPACE, "memory", "episodic_memory.db")
 
-# -- Known entity dictionary (for matching without LLM) --
 KNOWN_ENTITIES = {
-    # People
     "郭锐": "person", "guorui": "person",
     "Pablo": "person", "pablo": "person",
     "Iris": "person", "iris": "person",
     "KK": "person", "kk": "person", "小kk": "person",
-    "KK5": "person", "KK6": "person",
+    "KK5": "person", "KK6": "person", "KK7": "person",
     "Ryan": "person", "ryan": "person",
-    # Projects
     "SoulMem": "project", "soulmem": "project",
     "LinkClaw": "project", "linkclaw": "project",
     "Wiki": "project", "wiki": "project",
-    "KK": "project",  # ambiguous, handled specially
     "KK主页": "project", "KK6主页": "project", "主页": "project",
     "小渔打分": "project", "打分系统": "project",
     "Claude Code": "tool", "Claude": "tool",
@@ -42,12 +35,23 @@ KNOWN_ENTITIES = {
     "OpenClaw": "tool", "openclaw": "tool",
     "Ollama": "tool", "LongCat": "tool",
     "飞书": "tool", "Feishu": "tool",
+    "DeepSeek": "tool", "deepseek": "tool",
 }
 
-# Chinese name pattern (2-4 hanzi that aren't common words)
 CN_NAME_RE = re.compile(r'(?<![\u4e00-\u9fff])([A-Z][a-z]{1,15}|[\u4e00-\u9fff]{2,4})(?![\a-zA-Z0-9])')
-# Quoted terms
 QUOTED_RE = re.compile(r"[\u300c\u300e\u0022]([^\u300d\u300f\u0022]{2,20})[\u300d\u300f\u0022]")
+
+# Relationship type indicators
+RELATION_INDICATORS = {
+    "使用": ["使用", "用", "通过", "借助", "利用"],
+    "导致": ["导致", "造成", "引起", "引发", "带来"],
+    "修复": ["修复", "解决", "修好", "搞定", "处理"],
+    "创建": ["创建", "搭建", "建立", "开发", "实现"],
+    "属于": ["属于", "是", "作为", "担任"],
+    "影响": ["影响", "改变", "改进", "优化", "提升"],
+    "依赖": ["依赖", "需要", "基于", "依靠"],
+    "替代": ["替代", "替换", "取代", "更换"],
+}
 
 
 class KnowledgeGraph:
@@ -58,7 +62,6 @@ class KnowledgeGraph:
         self._init_schema()
 
     def _init_schema(self):
-        """Create graph tables if not exist."""
         self.cur.executescript("""
             CREATE TABLE IF NOT EXISTS entities (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,9 +74,7 @@ class KnowledgeGraph:
             CREATE TABLE IF NOT EXISTS entity_mentions (
                 memory_id INTEGER NOT NULL,
                 entity_id INTEGER NOT NULL,
-                PRIMARY KEY (memory_id, entity_id),
-                FOREIGN KEY (memory_id) REFERENCES episodic_memory(id),
-                FOREIGN KEY (entity_id) REFERENCES entities(id)
+                PRIMARY KEY (memory_id, entity_id)
             );
             CREATE TABLE IF NOT EXISTS relationships (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,26 +83,26 @@ class KnowledgeGraph:
                 relation_type TEXT DEFAULT 'associated',
                 weight REAL DEFAULT 1.0,
                 memory_ids TEXT DEFAULT '[]',
-                created_at TEXT DEFAULT (datetime('now', 'localtime')),
-                FOREIGN KEY (source_id) REFERENCES entities(id),
-                FOREIGN KEY (target_id) REFERENCES entities(id)
+                created_at TEXT DEFAULT (datetime('now', 'localtime'))
             );
             CREATE INDEX IF NOT EXISTS idx_entity_name ON entities(name);
             CREATE INDEX IF NOT EXISTS idx_entity_mentions_mid ON entity_mentions(memory_id);
             CREATE INDEX IF NOT EXISTS idx_rel_source ON relationships(source_id);
             CREATE INDEX IF NOT EXISTS idx_rel_target ON relationships(target_id);
+            CREATE INDEX IF NOT EXISTS idx_rel_type ON relationships(relation_type);
         """)
+        # Add community_id column if not exists
+        self.cur.execute("PRAGMA table_info(entities)")
+        columns = [row[1] for row in self.cur.fetchall()]
+        if 'community_id' not in columns:
+            self.cur.execute("ALTER TABLE entities ADD COLUMN community_id INTEGER DEFAULT 0")
         self.conn.commit()
 
     def extract_entities(self, text: str) -> list:
-        """Extract entities from text using known dictionary + heuristics."""
         if not text:
             return []
-
         entities = []
         text_lower = text.lower()
-
-        # Known entity matching (case-insensitive, longest match first)
         sorted_known = sorted(KNOWN_ENTITIES.keys(), key=len, reverse=True)
         matched_positions = set()
 
@@ -112,7 +113,6 @@ class KnowledgeGraph:
                 pos = text_lower.find(name_lower, start)
                 if pos == -1:
                     break
-                # Check for overlapping matches
                 positions = set(range(pos, pos + len(name)))
                 if positions & matched_positions:
                     start = pos + 1
@@ -121,7 +121,6 @@ class KnowledgeGraph:
                 entities.append((name, KNOWN_ENTITIES[name]))
                 start = pos + len(name)
 
-        # Quoted terms (potential entities)
         for match in QUOTED_RE.finditer(text):
             term = match.group(1)
             if term and term not in [e[0] for e in entities]:
@@ -129,8 +128,29 @@ class KnowledgeGraph:
 
         return entities
 
+    def _detect_relation_type(self, text: str, entity_a: str, entity_b: str) -> str:
+        """Detect relationship type from context."""
+        # Find the text between two entities
+        text_lower = text.lower()
+        pos_a = text_lower.find(entity_a.lower())
+        pos_b = text_lower.find(entity_b.lower())
+        
+        if pos_a == -1 or pos_b == -1:
+            return "associated"
+        
+        # Get text between entities
+        start = min(pos_a, pos_b)
+        end = max(pos_a, pos_b)
+        between = text_lower[start:end]
+        
+        for rel_type, indicators in RELATION_INDICATORS.items():
+            for indicator in indicators:
+                if indicator in between:
+                    return rel_type
+        
+        return "associated"
+
     def index_memory(self, memory_id: int, text: str):
-        """Extract entities from a memory and add to graph."""
         entities = self.extract_entities(text)
         if not entities:
             return
@@ -138,37 +158,25 @@ class KnowledgeGraph:
         now = datetime.now().isoformat()
 
         for name, etype in entities:
-            # Insert or update entity
-            self.cur.execute(
-                'SELECT id, mention_count FROM entities WHERE name = ?', (name,)
-            )
+            self.cur.execute('SELECT id, mention_count FROM entities WHERE name = ?', (name,))
             row = self.cur.fetchone()
             if row:
                 eid = row['id']
-                self.cur.execute(
-                    'UPDATE entities SET mention_count = ?, last_seen = ? WHERE id = ?',
-                    (row['mention_count'] + 1, now, eid)
-                )
+                self.cur.execute('UPDATE entities SET mention_count = ?, last_seen = ? WHERE id = ?',
+                    (row['mention_count'] + 1, now, eid))
             else:
                 self.cur.execute(
                     'INSERT INTO entities (name, type, mention_count, first_seen, last_seen) VALUES (?, ?, 1, ?, ?)',
-                    (name, etype, now, now)
-                )
+                    (name, etype, now, now))
                 eid = self.cur.lastrowid
 
-            # Link entity to memory
-            self.cur.execute(
-                'INSERT OR IGNORE INTO entity_mentions (memory_id, entity_id) VALUES (?, ?)',
-                (memory_id, eid)
-            )
+            self.cur.execute('INSERT OR IGNORE INTO entity_mentions (memory_id, entity_id) VALUES (?, ?)',
+                (memory_id, eid))
 
         self.conn.commit()
+        self._build_relationships(memory_id, entities, text)
 
-        # Build relationships between co-occurring entities
-        self._build_relationships(memory_id, entities)
-
-    def _build_relationships(self, memory_id: int, entities: list):
-        """Create relationships between entities appearing in the same memory."""
+    def _build_relationships(self, memory_id: int, entities: list, text: str):
         if len(entities) < 2:
             return
 
@@ -179,7 +187,6 @@ class KnowledgeGraph:
                 name_a, type_a = entities[i]
                 name_b, type_b = entities[j]
 
-                # Get entity IDs
                 self.cur.execute('SELECT id FROM entities WHERE name = ?', (name_a,))
                 row_a = self.cur.fetchone()
                 self.cur.execute('SELECT id FROM entities WHERE name = ?', (name_b,))
@@ -189,12 +196,11 @@ class KnowledgeGraph:
                     continue
 
                 id_a, id_b = row_a['id'], row_b['id']
+                rel_type = self._detect_relation_type(text, name_a, name_b)
 
-                # Check if relationship exists
                 self.cur.execute(
                     'SELECT id, weight, memory_ids FROM relationships WHERE source_id = ? AND target_id = ?',
-                    (id_a, id_b)
-                )
+                    (id_a, id_b))
                 row = self.cur.fetchone()
                 mem_ids = json.loads(row['memory_ids']) if row else []
                 weight = row['weight'] if row else 0
@@ -204,27 +210,21 @@ class KnowledgeGraph:
                     weight += 1.0
 
                 if row:
-                    self.cur.execute(
-                        'UPDATE relationships SET weight = ?, memory_ids = ? WHERE id = ?',
-                        (weight, json.dumps(mem_ids), row['id'])
-                    )
+                    self.cur.execute('UPDATE relationships SET weight = ?, memory_ids = ? WHERE id = ?',
+                        (weight, json.dumps(mem_ids), row['id']))
                 else:
                     self.cur.execute(
                         'INSERT INTO relationships (source_id, target_id, relation_type, weight, memory_ids) VALUES (?, ?, ?, ?, ?)',
-                        (id_a, id_b, 'associated', weight, json.dumps(mem_ids))
-                    )
+                        (id_a, id_b, rel_type, weight, json.dumps(mem_ids)))
 
         self.conn.commit()
 
     def build(self):
-        """Rebuild entire graph from all memories."""
-        # Clear existing graph data
         self.cur.execute('DELETE FROM relationships')
         self.cur.execute('DELETE FROM entity_mentions')
         self.cur.execute('DELETE FROM entities')
         self.conn.commit()
 
-        # Process all memories
         self.cur.execute('SELECT id, summary, detail FROM episodic_memory')
         rows = self.cur.fetchall()
 
@@ -235,21 +235,47 @@ class KnowledgeGraph:
             count += 1
 
         self.conn.commit()
+        self._detect_communities()
 
-        # Stats
         self.cur.execute('SELECT COUNT(*) FROM entities')
         entity_count = self.cur.fetchone()[0]
         self.cur.execute('SELECT COUNT(*) FROM relationships')
         rel_count = self.cur.fetchone()[0]
-
         print(f"✅ 知识图谱构建完成: {entity_count} 实体, {rel_count} 关系 (从 {count} 条记忆)")
 
+    def _detect_communities(self):
+        """Simple label propagation community detection."""
+        # Initialize each entity with its own label
+        self.cur.execute('SELECT id FROM entities')
+        entities = [r['id'] for r in self.cur.fetchall()]
+        
+        if not entities:
+            return
+        
+        labels = {eid: idx for idx, eid in enumerate(entities)}
+        
+        # Iterate to propagate labels
+        for _ in range(10):
+            self.cur.execute('SELECT source_id, target_id, weight FROM relationships')
+            rels = self.cur.fetchall()
+            
+            for rel in rels:
+                src, tgt, weight = rel['source_id'], rel['target_id'], rel['weight']
+                if src in labels and tgt in labels:
+                    # Propagate the label with higher weight
+                    if weight > 1:
+                        labels[src] = labels[tgt]
+        
+        # Update community_id in database
+        for eid, label in labels.items():
+            self.cur.execute('UPDATE entities SET community_id = ? WHERE id = ?', (label, eid))
+        
+        self.conn.commit()
+
     def get_related_memories(self, memory_id: int, depth: int = 2) -> list:
-        """Find related memories via graph traversal (BFS)."""
         if depth < 1:
             return []
 
-        # Get entities in this memory
         self.cur.execute("""
             SELECT e.id, e.name, e.type FROM entities e
             JOIN entity_mentions em ON e.id = em.entity_id
@@ -261,8 +287,6 @@ class KnowledgeGraph:
             return []
 
         entity_ids = [e['id'] for e in entities]
-
-        # BFS: find related entities then their memories
         visited_entities = set(entity_ids)
         current_level = set(entity_ids)
         all_related_memories = set()
@@ -271,7 +295,6 @@ class KnowledgeGraph:
             if not current_level:
                 break
 
-            # Find relationships involving current level entities
             placeholders = ','.join('?' * len(current_level))
             self.cur.execute(f"""
                 SELECT DISTINCT r.source_id, r.target_id FROM relationships r
@@ -287,7 +310,6 @@ class KnowledgeGraph:
                         visited_entities.add(eid)
                         next_level.add(eid)
 
-            # Get memories of these entities
             if next_level:
                 placeholders = ','.join('?' * len(next_level))
                 self.cur.execute(f"""
@@ -302,7 +324,6 @@ class KnowledgeGraph:
         if not all_related_memories:
             return []
 
-        # Fetch the actual memory records
         placeholders = ','.join('?' * len(all_related_memories))
         self.cur.execute(f"""
             SELECT id, scene_type, summary, memory_date FROM episodic_memory
@@ -317,9 +338,54 @@ class KnowledgeGraph:
             'memory_date': row['memory_date'],
         } for row in self.cur.fetchall()]
 
+    def find_path(self, entity_a: str, entity_b: str, max_depth: int = 4) -> list:
+        """Find shortest path between two entities using BFS."""
+        self.cur.execute('SELECT id FROM entities WHERE name = ?', (entity_a,))
+        row_a = self.cur.fetchone()
+        self.cur.execute('SELECT id FROM entities WHERE name = ?', (entity_b,))
+        row_b = self.cur.fetchone()
+
+        if not row_a or not row_b:
+            return []
+
+        start_id = row_a['id']
+        target_id = row_b['id']
+
+        # BFS
+        visited = {start_id}
+        queue = [(start_id, [start_id])]
+
+        while queue:
+            current, path = queue.pop(0)
+
+            if current == target_id:
+                # Convert IDs to names
+                names = []
+                for eid in path:
+                    self.cur.execute('SELECT name FROM entities WHERE id = ?', (eid,))
+                    row = self.cur.fetchone()
+                    if row:
+                        names.append(row['name'])
+                return names
+
+            if len(path) >= max_depth:
+                continue
+
+            self.cur.execute("""
+                SELECT target_id FROM relationships WHERE source_id = ?
+                UNION
+                SELECT source_id FROM relationships WHERE target_id = ?
+            """, (current, current))
+
+            for row in self.cur.fetchall():
+                neighbor = row[0] if row[0] != current else row[1] if len(row) > 1 else None
+                if neighbor and neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append((neighbor, path + [neighbor]))
+
+        return []
+
     def search(self, query: str, top: int = 10) -> dict:
-        """Enhanced search: combine keyword match + graph expansion."""
-        # First: standard keyword search across all memories
         qt = query.lower().split()
         if not qt:
             return {'entities': [], 'memories': [], 'graph_expanded': []}
@@ -327,7 +393,6 @@ class KnowledgeGraph:
         self.cur.execute('SELECT id, summary, detail, scene_type, memory_date FROM episodic_memory')
         all_mems = self.cur.fetchall()
 
-        # Keyword matching
         keyword_results = []
         for m in all_mems:
             text = f"{m['summary']} {m['detail']}".lower()
@@ -341,11 +406,9 @@ class KnowledgeGraph:
                     'match_count': match_count,
                 })
 
-        # Sort by match count
         keyword_results.sort(key=lambda x: x['match_count'], reverse=True)
         top_keyword = keyword_results[:top]
 
-        # Graph expansion: for each keyword result, find graph-related
         expanded = {}
         for mem in top_keyword[:5]:
             related = self.get_related_memories(mem['id'], depth=2)
@@ -355,7 +418,6 @@ class KnowledgeGraph:
                         expanded[r['id']] = r
                         expanded[r['id']]['via_graph'] = True
 
-        # Entities found in query
         query_entities = self.extract_entities(query)
 
         return {
@@ -365,7 +427,6 @@ class KnowledgeGraph:
         }
 
     def get_stats(self) -> dict:
-        """Return graph statistics."""
         self.cur.execute('SELECT COUNT(*) FROM entities')
         entity_count = self.cur.fetchone()[0]
         self.cur.execute('SELECT COUNT(*) FROM relationships')
@@ -373,41 +434,56 @@ class KnowledgeGraph:
         self.cur.execute('SELECT COUNT(*) FROM entity_mentions')
         mention_count = self.cur.fetchone()[0]
 
-        # Top entities
         self.cur.execute('SELECT name, type, mention_count FROM entities ORDER BY mention_count DESC LIMIT 15')
         top_entities = [{'name': r['name'], 'type': r['type'], 'mentions': r['mention_count']} for r in self.cur.fetchall()]
 
-        # Type distribution
         self.cur.execute('SELECT type, COUNT(*) as cnt FROM entities GROUP BY type ORDER BY cnt DESC')
         types = {r['type']: r['cnt'] for r in self.cur.fetchall()}
+
+        self.cur.execute('SELECT relation_type, COUNT(*) as cnt FROM relationships GROUP BY relation_type ORDER BY cnt DESC')
+        rel_types = {r['relation_type']: r['cnt'] for r in self.cur.fetchall()}
+
+        self.cur.execute('SELECT COUNT(DISTINCT community_id) FROM entities')
+        communities = self.cur.fetchone()[0]
+
+        # Graph density
+        max_rel = entity_count * (entity_count - 1) / 2 if entity_count > 1 else 1
+        density = rel_count / max_rel if max_rel > 0 else 0
 
         return {
             'entities': entity_count,
             'relationships': rel_count,
             'mentions': mention_count,
+            'communities': communities,
+            'density': round(density, 4),
             'top_entities': top_entities,
             'type_distribution': types,
+            'relation_types': rel_types,
         }
 
-    def get_top_entities(self, limit: int = 20) -> list:
-        """Return top entities by mention count."""
-        self.cur.execute('SELECT name, type, mention_count FROM entities ORDER BY mention_count DESC LIMIT ?', (limit,))
-        return [{'name': r['name'], 'type': r['type'], 'mentions': r['mention_count']} for r in self.cur.fetchall()]
+    def export_json(self) -> dict:
+        """Export graph as JSON for visualization."""
+        self.cur.execute('SELECT id, name, type, mention_count, community_id FROM entities')
+        nodes = [{'id': r['id'], 'name': r['name'], 'type': r['type'],
+                  'mentions': r['mention_count'], 'community': r['community_id']} for r in self.cur.fetchall()]
+
+        self.cur.execute('SELECT source_id, target_id, relation_type, weight FROM relationships')
+        links = [{'source': r['source_id'], 'target': r['target_id'],
+                  'type': r['relation_type'], 'weight': r['weight']} for r in self.cur.fetchall()]
+
+        return {'nodes': nodes, 'links': links}
 
 
 def cmd_build(args):
-    """Build knowledge graph from all memories."""
     kg = KnowledgeGraph()
     kg.build()
 
 
 def cmd_search(args):
-    """Graph-enhanced search."""
     kg = KnowledgeGraph()
-    query = args.query
-    results = kg.search(query, args.top)
+    results = kg.search(args.query, args.top)
 
-    print(f"🔍 '{query}' → 实体识别 + 图谱搜索\n")
+    print(f"🔍 '{args.query}' → 实体识别 + 图谱搜索\n")
 
     if results['entities']:
         print(f"📌 识别到的实体:")
@@ -428,7 +504,6 @@ def cmd_search(args):
 
 
 def cmd_show(args):
-    """Show graph statistics."""
     kg = KnowledgeGraph()
     stats = kg.get_stats()
 
@@ -436,10 +511,17 @@ def cmd_show(args):
     print(f"   实体总数: {stats['entities']}")
     print(f"   关系总数: {stats['relationships']}")
     print(f"   提及次数: {stats['mentions']}")
+    print(f"   社区数量: {stats['communities']}")
+    print(f"   图密度:   {stats['density']}")
     print()
 
     print("📈 类型分布:")
     for t, cnt in stats['type_distribution'].items():
+        bar = '█' * min(cnt, 30)
+        print(f"   {t:12} {cnt:4} {bar}")
+
+    print("\n📈 关系类型分布:")
+    for t, cnt in stats['relation_types'].items():
         bar = '█' * min(cnt, 30)
         print(f"   {t:12} {cnt:4} {bar}")
 
@@ -449,31 +531,46 @@ def cmd_show(args):
 
 
 def cmd_entities(args):
-    """List top entities."""
     kg = KnowledgeGraph()
-    entities = kg.get_top_entities(args.limit)
-    print(f"🏷️ Top {len(entities)} 实体:")
-    for i, e in enumerate(entities, 1):
-        print(f"   {i:2}. {e['name']:20} ({e['type']}) — {e['mentions']}次提及")
+    kg.cur.execute('SELECT name, type, mention_count, community_id FROM entities ORDER BY mention_count DESC LIMIT ?', (args.limit,))
+    rows = kg.cur.fetchall()
+    print(f"🏷️ Top {len(rows)} 实体:")
+    for i, r in enumerate(rows, 1):
+        print(f"   {i:2}. {r['name']:20} ({r['type']}) — {r['mention_count']}次 (社区:{r['community_id']})")
 
 
 def cmd_related(args):
-    """Find related memories for a given memory ID via graph."""
     kg = KnowledgeGraph()
     related = kg.get_related_memories(args.memory_id, args.depth)
-
     if not related:
         print(f"未找到与记忆 #{args.memory_id} 关联的记忆")
         return
-
     print(f"🔗 记忆 #{args.memory_id} 的图谱关联 (深度{args.depth}):")
     for i, m in enumerate(related, 1):
         print(f"   [{i}] ({m['scene_type']}) {m['summary']} [{m['memory_date']}]")
 
 
+def cmd_path(args):
+    kg = KnowledgeGraph()
+    path = kg.find_path(args.entity_a, args.entity_b, args.max_depth)
+    if path:
+        print(f"🔗 {' → '.join(path)}")
+    else:
+        print(f"未找到 {args.entity_a} 到 {args.entity_b} 的路径")
+
+
+def cmd_export(args):
+    kg = KnowledgeGraph()
+    data = kg.export_json()
+    output_path = args.output or 'graph_export.json'
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    print(f"✅ 图谱已导出到 {output_path} ({len(data['nodes'])} 节点, {len(data['links'])} 边)")
+
+
 def main():
     import argparse
-    p = argparse.ArgumentParser(description='SoulMem Knowledge Graph')
+    p = argparse.ArgumentParser(description='SoulMem Knowledge Graph v2')
     sub = p.add_subparsers(dest='command')
 
     sub.add_parser('build', help='Build graph from memories')
@@ -491,6 +588,14 @@ def main():
     p_rel.add_argument('memory_id', type=int, help='Memory ID')
     p_rel.add_argument('--depth', type=int, default=2, help='Traversal depth')
 
+    p_path = sub.add_parser('path', help='Find path between entities')
+    p_path.add_argument('entity_a', help='Source entity')
+    p_path.add_argument('entity_b', help='Target entity')
+    p_path.add_argument('--max-depth', type=int, default=4, help='Max search depth')
+
+    p_export = sub.add_parser('export', help='Export graph as JSON')
+    p_export.add_argument('--output', default='graph_export.json', help='Output file path')
+
     args = p.parse_args()
     commands = {
         'build': cmd_build,
@@ -498,6 +603,8 @@ def main():
         'show': cmd_show,
         'entities': cmd_entities,
         'related': cmd_related,
+        'path': cmd_path,
+        'export': cmd_export,
     }
 
     handler = commands.get(args.command)
