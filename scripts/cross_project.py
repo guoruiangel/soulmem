@@ -14,7 +14,7 @@ from collections import Counter
 from datetime import datetime
 
 WORKSPACE = os.environ.get("SOULMEM_WORKSPACE", os.path.expanduser("~/.openclaw/workspace"))
-DB_PATH = os.path.join(WORKSPACE, "memory", "episodic_memory.db")
+from soulmem_config import DB_PATH
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)

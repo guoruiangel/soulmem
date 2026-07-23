@@ -12,7 +12,7 @@ import os, sys, json, sqlite3, re
 from datetime import datetime
 
 WORKSPACE = os.environ.get("SOULMEM_WORKSPACE", os.path.expanduser("~/.openclaw/workspace"))
-DB_PATH = os.path.join(WORKSPACE, "memory", "episodic_memory.db")
+from soulmem_config import DB_PATH
 
 # Symptom keywords (what went wrong)
 SYMPTOM_PATTERNS = [

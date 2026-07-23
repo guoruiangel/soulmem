@@ -13,7 +13,7 @@ from datetime import datetime
 
 WORKSPACE = os.environ.get("SOULMEM_WORKSPACE", os.path.expanduser("~/.openclaw/workspace"))
 SCRIPTS_DIR = os.path.join(WORKSPACE, "scripts")
-DB_PATH = os.path.join(WORKSPACE, "memory", "episodic_memory.db")
+from soulmem_config import DB_PATH
 CAPTURE_SCRIPT = os.path.join(SCRIPTS_DIR, "episodic_capture.py")
 SIMILARITY_THRESHOLD = 0.6  # skip if existing summary is >60% similar
 

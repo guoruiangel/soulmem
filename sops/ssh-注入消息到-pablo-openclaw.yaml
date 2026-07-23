@@ -1,0 +1,37 @@
+name: SSH 注入消息到 Pablo OpenClaw
+description: 通过 SSH 在 Pablo 机器上执行 openclaw agent 命令，将消息注入到 Pablo 的 OpenClaw 主会话中
+version: 1
+created: '2026-07-23T17:20:50.148350'
+last_used: '2026-07-23T17:20:50.175508'
+success_count: 1
+fail_count: 0
+triggers:
+- Pablo
+- SSH 注入
+- openclaw agent
+- 跨机器通信
+steps:
+- check: SSH 到 Pablo 机器
+  action: ssh ryan@192.168.1.11
+  on_fail: 检查网络/SSH 配置
+- check: 获取 Pablo 主会话 ID
+  action: openclaw sessions list --limit 5，找到 agent:main:main 的 session id
+  on_fail: 检查 Pablo OpenClaw 是否在运行
+- check: 注入消息
+  action: openclaw agent --session-id <session-id> --message "消息内容"
+  on_fail: 检查 session-id 是否过期
+- check: 确认 Pablo 收到
+  action: 等待 Pablo 回复或检查会话历史
+  on_fail: 重新发送
+gotchas:
+- problem: openclaw 版本不匹配（config 版本 vs CLI 版本）
+  solution: 检查 which openclaw，确保版本一致
+- problem: session-id 过期
+  solution: 每次发送前重新获取 session-id
+- problem: 消息太长被截断
+  solution: 短消息优先，长消息分条发送
+- problem: Pablo 没回复
+  solution: 可能是模型超时，检查 openclaw agent 返回状态
+memory_ids:
+- 96
+status: active

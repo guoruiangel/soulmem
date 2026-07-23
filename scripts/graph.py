@@ -16,7 +16,7 @@ from collections import Counter, defaultdict
 from datetime import datetime
 
 WORKSPACE = os.environ.get("SOULMEM_WORKSPACE", os.path.expanduser("~/.openclaw/workspace"))
-DB_PATH = os.path.join(WORKSPACE, "memory", "episodic_memory.db")
+from soulmem_config import DB_PATH
 
 KNOWN_ENTITIES = {
     "郭锐": "person", "guorui": "person",

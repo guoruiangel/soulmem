@@ -25,7 +25,7 @@ WORKSPACE = os.environ.get("SOULMEM_WORKSPACE", os.path.expanduser("~/.openclaw/
 SOPS_DIR = Path(WORKSPACE) / "soulmem" / "sops"
 SOPS_DIR.mkdir(parents=True, exist_ok=True)
 
-DB_PATH = os.path.join(WORKSPACE, "memory", "episodic_memory.db")
+from soulmem_config import DB_PATH
 
 
 class SOPManager:

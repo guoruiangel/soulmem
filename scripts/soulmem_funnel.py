@@ -14,7 +14,18 @@ import re
 from datetime import datetime
 
 WORKSPACE = os.environ.get("SOULMEM_WORKSPACE", os.path.expanduser("~/.openclaw/workspace"))
-DB_PATH = os.path.join(WORKSPACE, "memory", "episodic_memory.db")
+AGENT = os.environ.get("SOULMEM_AGENT", "kk")
+
+# 根据 agent 选择数据库
+if AGENT == "kk":
+    DB_PATH = os.path.join(WORKSPACE, "memory", "episodic_memory.db")
+elif AGENT == "iris":
+    DB_PATH = os.path.join(WORKSPACE, "soulmem", "agents", "iris", "episodic_memory.db")
+elif AGENT == "mira":
+    DB_PATH = os.path.join(WORKSPACE, "soulmem", "agents", "mira", "episodic_memory.db")
+else:
+    DB_PATH = os.path.join(WORKSPACE, "memory", "episodic_memory.db")
+
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 sys.path.insert(0, SCRIPTS_DIR)
@@ -118,10 +129,110 @@ TECH_TAGS = ['500', 'import', 'Flask', 'SQLite', 'LinkClaw', 'Ollama', 'Pablo', 
 class FunnelEngine:
     """漏斗引擎：自动拆解用户输入，写入 SoulMem"""
     
-    def __init__(self, role="kk"):
-        self.role = role
+    def __init__(self, role=None):
+        self.role = role or AGENT
         self.conn = sqlite3.connect(DB_PATH)
         self.conn.row_factory = sqlite3.Row
+        self._init_schema()
+    
+    def _init_schema(self):
+        """确保表存在"""
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS episodic_memory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scene_type TEXT,
+                summary TEXT NOT NULL,
+                detail TEXT DEFAULT '',
+                tags TEXT DEFAULT '[]',
+                importance INTEGER DEFAULT 5,
+                weight REAL DEFAULT 1.0,
+                memory_date TEXT,
+                last_accessed TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS memory_tags_index (
+                tag TEXT NOT NULL,
+                memory_id INTEGER NOT NULL,
+                PRIMARY KEY (tag, memory_id)
+            );
+            CREATE TABLE IF NOT EXISTS mem_vec (
+                id INTEGER PRIMARY KEY,
+                vec TEXT,
+                mod TEXT,
+                upd TEXT
+            );
+            CREATE TABLE IF NOT EXISTS triples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symptom TEXT NOT NULL,
+                cause TEXT NOT NULL,
+                solution TEXT NOT NULL,
+                tags TEXT DEFAULT '[]',
+                domain TEXT DEFAULT 'general',
+                confidence REAL DEFAULT 0.8,
+                initial_confidence REAL DEFAULT 0.8,
+                usage_count INTEGER DEFAULT 0,
+                linked_memory_id INTEGER DEFAULT 0,
+                source TEXT DEFAULT 'manual'
+            );
+            CREATE TABLE IF NOT EXISTS entities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                type TEXT DEFAULT 'concept',
+                mention_count INTEGER DEFAULT 1,
+                community_id INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS entity_mentions (
+                memory_id INTEGER NOT NULL,
+                entity_id INTEGER NOT NULL,
+                PRIMARY KEY (memory_id, entity_id)
+            );
+            CREATE TABLE IF NOT EXISTS relationships (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER NOT NULL,
+                target_id INTEGER NOT NULL,
+                relation_type TEXT DEFAULT 'associated',
+                weight REAL DEFAULT 1.0
+            );
+            CREATE TABLE IF NOT EXISTS troubleshooting_sops (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symptom TEXT NOT NULL,
+                category TEXT DEFAULT 'general',
+                steps TEXT NOT NULL,
+                expected_outcomes TEXT DEFAULT '[]',
+                success_count INTEGER DEFAULT 0,
+                fail_count INTEGER DEFAULT 0,
+                avg_resolution_minutes REAL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS memory_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_name TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                source_ids TEXT NOT NULL,
+                lesson TEXT DEFAULT '',
+                category TEXT DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS review_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                memory_id INTEGER NOT NULL,
+                performance INTEGER DEFAULT 3,
+                next_review DATE,
+                interval_days INTEGER DEFAULT 1,
+                ease_factor REAL DEFAULT 2.5,
+                FOREIGN KEY (memory_id) REFERENCES episodic_memory(id)
+            );
+            CREATE TABLE IF NOT EXISTS pending_reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_key TEXT NOT NULL,
+                generated_content TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                edited_content TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                reviewed_at TIMESTAMP,
+                written INTEGER DEFAULT 0
+            );
+        """)
+        self.conn.commit()
     
     def ingest(self, text):
         """主拆解+写入流程"""
