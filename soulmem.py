@@ -612,6 +612,70 @@ def cmd_wiki(args):
         print("  restart    Restart wiki service")
 
 
+def cmd_sop(args):
+    """SOP Skills manager."""
+    from sop_manager import SOPManager
+    from sop_triggers import SOPTriggerDetector
+    
+    manager = SOPManager()
+    sop_cmd = getattr(args, 'sop_cmd', None)
+    
+    if sop_cmd == 'list':
+        sops = manager.list_sops("active")
+        if not sops:
+            print("暂无 SOP")
+            return
+        for sop in sops:
+            print(f"  {sop.get('name'):30} v{sop.get('version', 1)} | {sop.get('status', 'active')} | 成功{sop.get('success_count', 0)}次")
+    
+    elif sop_cmd == 'get':
+        sop = manager.get_sop(args.slug)
+        if not sop:
+            print(f"SOP '{args.slug}' 不存在")
+            return
+        print(json.dumps(sop, indent=2, ensure_ascii=False))
+    
+    elif sop_cmd == 'search':
+        results = manager.search_sops(args.query)
+        if not results:
+            print("未找到匹配的 SOP")
+            return
+        for sop in results:
+            print(f"  {sop.get('name'):30} | {sop.get('description', '')[:50]}")
+    
+    elif sop_cmd == 'create':
+        slug = manager.create_sop(args.name, args.desc, [], args.triggers)
+        print(f"✅ SOP 创建: {slug}")
+    
+    elif sop_cmd == 'detect':
+        detector = SOPTriggerDetector()
+        suggestions = detector.auto_trigger()
+        if not suggestions:
+            print("暂无重复操作需要固化")
+            return
+        print(f"发现 {len(suggestions)} 个建议:")
+        for s in suggestions:
+            print(f"  - {s['suggestion']}")
+    
+    elif sop_cmd == 'to-memory':
+        memory_id = manager.sop_to_memory(args.slug)
+        if memory_id:
+            print(f"✅ 已写入 SoulMem: episodic_memory #{memory_id}")
+        else:
+            print("❌ 写入失败")
+    
+    else:
+        print("Usage: soulmem sop <command>")
+        print("")
+        print("Commands:")
+        print("  list         列出所有 SOP")
+        print("  get <slug>   获取 SOP 详情")
+        print("  search <q>   搜索 SOP")
+        print("  create       创建 SOP")
+        print("  detect       检测重复操作")
+        print("  to-memory    写入 SoulMem")
+
+
 def cmd_doctor(args):
     """Health check & diagnostic."""
     from doctor_init import run_doctor as _run_doctor
@@ -1024,23 +1088,21 @@ def main():
     p_ingest_review.add_argument("report_id", type=int, help="报告ID")
     p_ingest_review.add_argument("report_id", type=int, help="报告ID")
 
-    # --- wiki ---
-    p_wiki = sub.add_parser("wiki", help="Wiki operations manager")
-    p_wiki_sub = p_wiki.add_subparsers(dest="wiki_cmd")
-    p_wiki_sub.add_parser("status", help="Check wiki status")
-    p_wiki_sub.add_parser("list", help="List all pages")
-    p_wiki_get = p_wiki_sub.add_parser("get", help="Get page content")
-    p_wiki_get.add_argument("slug", help="Page slug")
-    p_wiki_create = p_wiki_sub.add_parser("create", help="Create a page")
-    p_wiki_create.add_argument("--title", required=True)
-    p_wiki_create.add_argument("--slug", default=None)
-    p_wiki_create.add_argument("--content", default="")
-    p_wiki_update = p_wiki_sub.add_parser("update", help="Update a page")
-    p_wiki_update.add_argument("slug", help="Page slug")
-    p_wiki_update.add_argument("--content", required=True)
-    p_wiki_sub.add_parser("start", help="Start wiki service")
-    p_wiki_sub.add_parser("stop", help="Stop wiki service")
-    p_wiki_sub.add_parser("restart", help="Restart wiki service")
+    # --- sop ---
+    p_sop = sub.add_parser("sop", help="SOP Skills manager")
+    p_sop_sub = p_sop.add_subparsers(dest="sop_cmd")
+    p_sop_sub.add_parser("list", help="列出所有 SOP")
+    p_sop_get = p_sop_sub.add_parser("get", help="获取 SOP 详情")
+    p_sop_get.add_argument("slug", help="SOP slug")
+    p_sop_search = p_sop_sub.add_parser("search", help="搜索 SOP")
+    p_sop_search.add_argument("query", help="搜索关键词")
+    p_sop_create = p_sop_sub.add_parser("create", help="创建 SOP")
+    p_sop_create.add_argument("--name", required=True)
+    p_sop_create.add_argument("--desc", default="")
+    p_sop_create.add_argument("--triggers", nargs="*", default=[])
+    p_sop_sub.add_parser("detect", help="检测重复操作")
+    p_sop_to_mem = p_sop_sub.add_parser("to-memory", help="SOP 写入 SoulMem")
+    p_sop_to_mem.add_argument("slug", help="SOP slug")
 
     args = parser.parse_args()
 
@@ -1071,6 +1133,7 @@ def main():
         "cross-project": cmd_cross_project,
         "ingest": cmd_ingest,
         "wiki": cmd_wiki,
+        "sop": cmd_sop,
     }
 
     handler = commands.get(args.command)

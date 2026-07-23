@@ -1,0 +1,15 @@
+name: Wiki 操作
+description: Wiki 页面创建和编辑
+version: 1
+created: '2026-07-23T15:03:40.740720'
+last_used: null
+success_count: 0
+fail_count: 0
+triggers:
+- 写 wiki
+- 更新 wiki
+steps: []
+gotchas: []
+memory_ids:
+- 87
+status: active
