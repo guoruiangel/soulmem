@@ -1,0 +1,32 @@
+name: 端口争用排查
+description: 服务启动失败或端口被占用时的排查流程
+version: 1
+created: '2026-07-23T15:14:07.643065'
+last_used: null
+success_count: 0
+fail_count: 0
+triggers:
+- 端口被占
+- 端口争用
+- Address already in use
+- 服务起不来
+steps:
+- check: 谁占端口
+  action: lsof -i :端口
+  on_fail: 找到占用进程
+- check: kill 占用进程
+  action: kill -9 PID
+  on_fail: 检查权限
+- check: launchd 守护
+  action: launchctl list | grep 进程
+  on_fail: 停掉守护
+- check: 重启服务
+  action: 启动服务
+  on_fail: 检查日志
+gotchas:
+- problem: watchdog 不断重启旧版本
+  solution: 先 launchctl bootout 停掉守护
+- problem: 同一进程不断复活
+  solution: 检查 launchd KeepAlive 设置
+memory_ids: []
+status: active

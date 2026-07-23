@@ -1,0 +1,29 @@
+name: 浏览器缓存问题排查
+description: 页面显示旧内容或 JS 报错时的缓存排查
+version: 1
+created: '2026-07-23T15:14:07.631929'
+last_used: null
+success_count: 0
+fail_count: 0
+triggers:
+- 浏览器缓存
+- 旧内容
+- JS 报错
+- 页面不更新
+steps:
+- check: 强制刷新
+  action: Cmd+Shift+R (Mac) 或 Ctrl+Shift+R (Win)
+  on_fail: 继续
+- check: 无痕模式
+  action: 打开无痕窗口访问
+  on_fail: 继续
+- check: 清除缓存
+  action: DevTools → Network → Disable cache
+  on_fail: 继续
+gotchas:
+- problem: 旧版本 JS 有报错
+  solution: 强制刷新清除缓存
+- problem: CDN 跨域
+  solution: 检查 Console 跨域错误
+memory_ids: []
+status: active

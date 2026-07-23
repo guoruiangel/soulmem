@@ -1,0 +1,40 @@
+name: Pablo 机器服务部署排查
+description: 往 Pablo 机器部署服务时的标准排查流程
+version: 1
+created: '2026-07-23T15:14:07.607570'
+last_used: null
+success_count: 0
+fail_count: 0
+triggers:
+- Pablo 服务
+- 5000 端口
+- 部署服务
+- watchdog
+- launchd
+steps:
+- check: 谁占端口
+  action: lsof -i :端口
+  on_fail: 找到占用进程
+- check: launchd 保活状态
+  action: launchctl list | grep 进程
+  on_fail: 停掉守护
+- check: 文件路径正确
+  action: pwd / which 确认
+  on_fail: 修正路径
+- check: 部署并验证
+  action: scp + curl 验证
+  on_fail: 重新部署
+- check: 重启保活
+  action: launchctl bootstrap
+  on_fail: 检查 plist
+gotchas:
+- problem: ModuleNotFoundError
+  solution: 用 try/except 包住外部 import，缺失时 fallback
+- problem: app.run() 在 import 时触发
+  solution: 加 if __name__ == "__main__" 包装
+- problem: 新路由一直 404
+  solution: watchdog 加载了旧版 app.py，先停守护
+- problem: launchd 指向错误目录
+  solution: 检查 ~/Library/LaunchAgents/ 下的 plist 文件
+memory_ids: []
+status: active

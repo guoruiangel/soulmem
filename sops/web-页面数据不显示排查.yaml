@@ -1,0 +1,44 @@
+name: Web 页面数据不显示排查
+description: 页面空白、数据不显示、模板渲染异常的标准排查流程
+version: 1
+created: '2026-07-23T15:14:07.597516'
+last_used: '2026-07-23T15:14:33.646147'
+success_count: 1
+fail_count: 0
+triggers:
+- 页面空白
+- 数据不显示
+- 模板渲染异常
+- 页面无内容
+- wiki 空白
+steps:
+- check: 后端 API 是否有数据
+  action: curl http://localhost:端口/api/xxx
+  on_fail: 修复后端 API
+- check: HTML 模板是否包含渲染函数
+  action: curl http://localhost:端口/ | grep 关键标签
+  on_fail: 修复模板
+- check: 浏览器 Console 错误
+  action: 打开 DevTools 查看
+  on_fail: 修复 JS 错误
+- check: 服务是否重启
+  action: curl 验证关键字符串
+  on_fail: 重启服务
+- check: 浏览器缓存
+  action: 强制刷新 Cmd+Shift+R
+  on_fail: 清除缓存
+gotchas:
+- problem: wiki 空白：content_html 字段为空
+  solution: 用 md_to_html() 重新计算
+- problem: 评分记录不显示：模板被改乱
+  solution: 完全重写干净模板，比增量修改更可靠
+- problem: 多个 JS 函数冲突
+  solution: 每个数据源独立 fetch，不耦合在同一个 Promise.all
+- problem: 浏览器缓存旧版本
+  solution: 强制刷新清除缓存
+- problem: API 返回空数据
+  solution: 检查后端数据库连接
+  seen: 1
+  added: '2026-07-23T15:14:33.654544'
+memory_ids: []
+status: active

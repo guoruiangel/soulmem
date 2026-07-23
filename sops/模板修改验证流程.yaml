@@ -1,0 +1,35 @@
+name: 模板修改验证流程
+description: 修改 HTML/Jinja2 模板后的标准验证步骤
+version: 1
+created: '2026-07-23T15:14:07.618993'
+last_used: null
+success_count: 0
+fail_count: 0
+triggers:
+- 模板修改
+- HTML 改
+- Jinja2
+- 模板不更新
+steps:
+- check: 改完模板
+  action: 保存文件
+  on_fail: 重新编辑
+- check: curl 验证关键字符串
+  action: curl http://localhost:端口/ | grep 关键内容
+  on_fail: 检查模板语法
+- check: 重启服务
+  action: kill + 重启
+  on_fail: 检查端口
+- check: curl 再次验证
+  action: 确认新内容出现
+  on_fail: 检查模板缓存
+- check: 浏览器访问
+  action: 强制刷新确认
+  on_fail: 清缓存
+gotchas:
+- problem: 模板改了但 curl 无变化
+  solution: 服务没重启或文件被改乱
+- problem: 多次字符串替换导致文件损坏
+  solution: 完全重写干净模板
+memory_ids: []
+status: active
