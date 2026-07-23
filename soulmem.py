@@ -1077,6 +1077,24 @@ def main():
     p_cross_map.add_argument("memory_id", type=int)
     p_cross_map.add_argument("to_domain")
 
+    # --- wiki ---
+    p_wiki = sub.add_parser("wiki", help="Wiki operations manager")
+    p_wiki_sub = p_wiki.add_subparsers(dest="wiki_cmd")
+    p_wiki_sub.add_parser("status", help="Check wiki status")
+    p_wiki_sub.add_parser("list", help="List all pages")
+    p_wiki_get = p_wiki_sub.add_parser("get", help="Get page content")
+    p_wiki_get.add_argument("slug", help="Page slug")
+    p_wiki_create = p_wiki_sub.add_parser("create", help="Create a page")
+    p_wiki_create.add_argument("--title", required=True)
+    p_wiki_create.add_argument("--slug", default=None)
+    p_wiki_create.add_argument("--content", default="")
+    p_wiki_update = p_wiki_sub.add_parser("update", help="Update a page")
+    p_wiki_update.add_argument("slug", help="Page slug")
+    p_wiki_update.add_argument("--content", required=True)
+    p_wiki_sub.add_parser("start", help="Start wiki service")
+    p_wiki_sub.add_parser("stop", help="Stop wiki service")
+    p_wiki_sub.add_parser("restart", help="Restart wiki service")
+
     # --- ingest ---
     p_ingest = sub.add_parser("ingest", help="Unified ingest funnel (auto-parse and write)")
     p_ingest_sub = p_ingest.add_subparsers(dest="ingest_cmd")
