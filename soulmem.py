@@ -539,6 +539,79 @@ def cmd_ingest(args):
         print("  review <report_id>         审核报告")
 
 
+def cmd_wiki(args):
+    """Wiki operations manager."""
+    from wiki_manager import WikiManager
+    
+    wm = WikiManager()
+    wiki_cmd = getattr(args, 'wiki_cmd', None)
+    
+    if wiki_cmd == 'status':
+        result = wm.health_check()
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    
+    elif wiki_cmd == 'list':
+        pages = wm.list_pages()
+        if pages:
+            for p in pages:
+                print(f"  {p['id']:3} | {p['slug']:30} | {p['title']}")
+        else:
+            print("No pages or not logged in")
+    
+    elif wiki_cmd == 'get':
+        page = wm.get_page(args.slug)
+        if page:
+            print(f"Title: {page.get('title')}")
+            print(f"Content:\n{page.get('content', '')[:500]}")
+        else:
+            print("Page not found")
+    
+    elif wiki_cmd == 'create':
+        result = wm.create_page(args.title, args.slug, args.content)
+        if result:
+            print(f"✅ Created: {result.get('slug')}")
+        else:
+            print("❌ Create failed")
+    
+    elif wiki_cmd == 'update':
+        result = wm.update_page(args.slug, args.content)
+        if result:
+            print(f"✅ Updated: {args.slug}")
+        else:
+            print("❌ Update failed")
+    
+    elif wiki_cmd == 'start':
+        if wm.start_service():
+            print("✅ Service started")
+        else:
+            print("❌ Failed to start")
+    
+    elif wiki_cmd == 'stop':
+        if wm.stop_service():
+            print("✅ Service stopped")
+        else:
+            print("❌ Failed to stop")
+    
+    elif wiki_cmd == 'restart':
+        if wm.restart_service():
+            print("✅ Service restarted")
+        else:
+            print("❌ Failed to restart")
+    
+    else:
+        print("Usage: soulmem wiki <command>")
+        print("")
+        print("Commands:")
+        print("  status     Check wiki status")
+        print("  list       List all pages")
+        print("  get <slug> Get page content")
+        print("  create     Create a page")
+        print("  update     Update a page")
+        print("  start      Start wiki service")
+        print("  stop       Stop wiki service")
+        print("  restart    Restart wiki service")
+
+
 def cmd_doctor(args):
     """Health check & diagnostic."""
     from doctor_init import run_doctor as _run_doctor
@@ -951,9 +1024,23 @@ def main():
     p_ingest_review.add_argument("report_id", type=int, help="报告ID")
     p_ingest_review.add_argument("report_id", type=int, help="报告ID")
 
-    # --- doctor ---
-    p_doctor = sub.add_parser("doctor", help="Health check & diagnostic")
-    p_doctor.add_argument("--fix", action="store_true", help="Auto-fix issues")
+    # --- wiki ---
+    p_wiki = sub.add_parser("wiki", help="Wiki operations manager")
+    p_wiki_sub = p_wiki.add_subparsers(dest="wiki_cmd")
+    p_wiki_sub.add_parser("status", help="Check wiki status")
+    p_wiki_sub.add_parser("list", help="List all pages")
+    p_wiki_get = p_wiki_sub.add_parser("get", help="Get page content")
+    p_wiki_get.add_argument("slug", help="Page slug")
+    p_wiki_create = p_wiki_sub.add_parser("create", help="Create a page")
+    p_wiki_create.add_argument("--title", required=True)
+    p_wiki_create.add_argument("--slug", default=None)
+    p_wiki_create.add_argument("--content", default="")
+    p_wiki_update = p_wiki_sub.add_parser("update", help="Update a page")
+    p_wiki_update.add_argument("slug", help="Page slug")
+    p_wiki_update.add_argument("--content", required=True)
+    p_wiki_sub.add_parser("start", help="Start wiki service")
+    p_wiki_sub.add_parser("stop", help="Stop wiki service")
+    p_wiki_sub.add_parser("restart", help="Restart wiki service")
 
     args = parser.parse_args()
 
@@ -983,6 +1070,7 @@ def main():
         "auto-remediate": cmd_auto_remediate,
         "cross-project": cmd_cross_project,
         "ingest": cmd_ingest,
+        "wiki": cmd_wiki,
     }
 
     handler = commands.get(args.command)

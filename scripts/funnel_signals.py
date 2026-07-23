@@ -39,7 +39,7 @@ VALUE_SIGNALS = {
     # 问题信号
     "problem": {
         "patterns": [
-            r'(报错|错误|失败|error|ERROR|fail|FAIL|crash|exception)',
+            r'(报500|500错误|500|报错|错误|失败|error|ERROR|fail|FAIL|crash|exception)',
             r'(超时|timeout|TIMEOUT)',
             r'(不能|无法|没法|不行|不起作用|不工作|崩溃|奔溃)',
             r'(慢|卡顿|无响应|连接不上|找不到|不存在|权限|数据丢失)',
