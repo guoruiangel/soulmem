@@ -402,6 +402,143 @@ def cmd_review(args):
         print("Available: due, review, stats, heatmap")
 
 
+def cmd_ingest(args):
+    """Unified ingest funnel — auto-parse and write to SoulMem."""
+    import json
+    from datetime import datetime, timedelta
+    from soulmem_funnel import FunnelEngine
+    from funnel_generator import ReportGenerator
+    from funnel_cron import run_period_check, get_current_period
+    
+    ingest_cmd = getattr(args, 'ingest_cmd', None)
+    
+    if ingest_cmd == 'manual':
+        # 手动录入模式
+        role = getattr(args, 'role', 'kk')
+        print(f"\n🔍 SoulMem Funnel — {role.upper()} 模式")
+        print("=" * 50)
+        print("📝 记录今天的事（写多少都行，写完按两次回车）:\n")
+        
+        # 读取多行输入
+        lines = []
+        while True:
+            try:
+                line = input()
+                if line == '' and lines and lines[-1] == '':
+                    break
+                lines.append(line)
+            except EOFError:
+                break
+        
+        text = '\n'.join(lines).strip()
+        if not text:
+            print("取消录入")
+            return
+        
+        # 初始化引擎
+        engine = FunnelEngine(role)
+        
+        # 拆解 + 校验
+        result = engine.ingest(text)
+        
+        # 确认
+        print(f"\n确认写入 SoulMem? [Y/n/e(编辑)]")
+        choice = input("> ").strip().lower()
+        
+        if choice in ('y', ''):
+            written = engine.write(result)
+            print(f"\n✅ 已写入: {', '.join(written)}")
+        elif choice == 'e':
+            print("请输入补充内容:")
+            extra = input("> ").strip()
+            result["detail"] = result.get("detail", "") + "\n\n补充: " + extra
+            written = engine.write(result)
+            print(f"\n✅ 已写入: {', '.join(written)}")
+        else:
+            print("取消录入")
+    
+    elif ingest_cmd == 'pending':
+        # 查看待审核报告
+        generator = ReportGenerator()
+        pending = generator.get_pending_reports()
+        if not pending:
+            print("📋 没有待审核的报告")
+            return
+        print(f"📋 {len(pending)} 个待审核报告:\n")
+        for r in pending:
+            data = json.loads(r["generated_content"])
+            print(f"  #{r['id']} | {data.get('period', {}).get('start', '?')[:16]} | {data.get('summary', {}).get('total_conversations', 0)} 条")
+    
+    elif ingest_cmd == 'auto':
+        # 触发自动分析
+        period = get_current_period()
+        if period:
+            run_period_check(period)
+        else:
+            # 不是检查时段，分析过去4小时
+            print("📋 当前不是检查时段，分析过去4小时...")
+            generator = ReportGenerator()
+            end_time = datetime.now()
+            start_time = end_time - timedelta(hours=4)
+            report = generator.generate_period_report(start_time, end_time)
+            if report:
+                report_id = generator.save_pending_report(report)
+                print(f"📋 发现 {report['summary']['total_conversations']} 条有价值内容")
+                print(f"报告已保存 #{report_id}，请审核")
+            else:
+                print("📋 过去4小时无值得记录的内容")
+    
+    elif ingest_cmd == 'review':
+        # 审核报告
+        report_id = args.report_id
+        generator = ReportGenerator()
+        
+        # 获取报告
+        cursor = generator.conn.execute("SELECT * FROM pending_reports WHERE id = ?", (report_id,))
+        report = cursor.fetchone()
+        if not report:
+            print(f"❌ 报告 #{report_id} 不存在")
+            return
+        
+        data = json.loads(report["generated_content"])
+        
+        # 显示报告
+        print(generator.format_report(data))
+        
+        # 操作选择
+        print(f"\n操作: [a]通过 [e]编辑 [r]拒绝 [s]跳过")
+        choice = input("> ").strip().lower()
+        
+        if choice == 'a':
+            generator.approve_report(report_id)
+            print(f"✅ 报告 #{report_id} 已通过")
+            
+            # 自动写入 SoulMem
+            written = generator.write_to_soulmem(report_id)
+            if written:
+                print(f"✅ 已自动写入 SoulMem")
+        elif choice == 'e':
+            print("请输入编辑后的内容:")
+            edited = input("> ").strip()
+            generator.approve_report(report_id, edited)
+            print(f"✅ 报告 #{report_id} 已编辑并通过")
+        elif choice == 'r':
+            generator.reject_report(report_id)
+            print(f"✅ 报告 #{report_id} 已拒绝")
+        else:
+            print("跳过")
+    
+    else:
+        # 默认显示帮助
+        print("Usage: soulmem ingest <command>")
+        print("")
+        print("Commands:")
+        print("  manual [--role kk|iris]     手动录入")
+        print("  pending                    查看待审核报告")
+        print("  auto                       触发自动分析")
+        print("  review <report_id>         审核报告")
+
+
 def cmd_doctor(args):
     """Health check & diagnostic."""
     from doctor_init import run_doctor as _run_doctor
@@ -803,6 +940,17 @@ def main():
     p_cross_map.add_argument("memory_id", type=int)
     p_cross_map.add_argument("to_domain")
 
+    # --- ingest ---
+    p_ingest = sub.add_parser("ingest", help="Unified ingest funnel (auto-parse and write)")
+    p_ingest_sub = p_ingest.add_subparsers(dest="ingest_cmd")
+    p_ingest_manual = p_ingest_sub.add_parser("manual", help="手动录入")
+    p_ingest_manual.add_argument("--role", default="kk", choices=["kk", "iris"], help="角色")
+    p_ingest_sub.add_parser("pending", help="查看待审核报告")
+    p_ingest_sub.add_parser("auto", help="触发自动分析")
+    p_ingest_review = p_ingest_sub.add_parser("review", help="审核报告")
+    p_ingest_review.add_argument("report_id", type=int, help="报告ID")
+    p_ingest_review.add_argument("report_id", type=int, help="报告ID")
+
     # --- doctor ---
     p_doctor = sub.add_parser("doctor", help="Health check & diagnostic")
     p_doctor.add_argument("--fix", action="store_true", help="Auto-fix issues")
@@ -834,6 +982,7 @@ def main():
         "doctor": cmd_doctor,
         "auto-remediate": cmd_auto_remediate,
         "cross-project": cmd_cross_project,
+        "ingest": cmd_ingest,
     }
 
     handler = commands.get(args.command)
